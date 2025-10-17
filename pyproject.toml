@@ -1,0 +1,32 @@
+[build-system]
+requires = ["flit_core >=3.2,<4"]
+build-backend = "flit_core.buildapi"
+
+[project]
+name = "cmpt491_als"
+version = "0.0.1"
+description = "This project implements a classifer of vocalizations to train a model too distinguish the vocalizastions of people with ALS and what class of ALS that they have."
+authors = [
+  { name = "CMPT491 ALS Team #2" },
+]
+license = { file = "LICENSE" }
+readme = "README.md"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License"
+]
+requires-python = "~=3.10.0"
+
+
+[tool.ruff]
+line-length = 99
+src = ["cmpt491_als"]
+include = ["pyproject.toml", "cmpt491_als/**/*.py"]
+
+[tool.ruff.lint]
+extend-select = ["I"]  # Add import sorting
+
+[tool.ruff.lint.isort]
+known-first-party = ["cmpt491_als"]
+force-sort-within-sections = true
+
