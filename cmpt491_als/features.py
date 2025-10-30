@@ -3,27 +3,34 @@ from pathlib import Path
 from loguru import logger
 from tqdm import tqdm
 import typer
+import parselmouth
+from parselmouth.praat import call
 
-from cmpt491_als.config import PROCESSED_DATA_DIR
+from cmpt491_als.config import PROCESSED_DATA_DIR, INTERIM_DATA_DIR
 
 app = typer.Typer()
+
+def extract_audio_features(df):
+
+    for row in df.iterrow():
+        print(row)
+        updated_subject_row = subject_row
+
+    return df
 
 
 @app.command()
 def main(
-    # ---- REPLACE DEFAULT PATHS AS APPROPRIATE ----
-    input_path: Path = PROCESSED_DATA_DIR / "dataset.csv",
-    output_path: Path = PROCESSED_DATA_DIR / "features.csv",
-    # -----------------------------------------
-):
-    # ---- REPLACE THIS WITH YOUR OWN CODE ----
-    logger.info("Generating features from dataset...")
-    for i in tqdm(range(10), total=10):
-        if i == 5:
-            logger.info("Something happened for iteration 5.")
-    logger.success("Features generation complete.")
-    # -----------------------------------------
 
+    input_path: Path = INTERIM_DATA_DIR / "sand_dataset.csv",
+    output_path: Path = PROCESSED_DATA_DIR / "features.csv",
+
+):
+    logger.info("Generating features from dataset...")
+
+    df = pd.read_csv(input_path)
+
+    updated_df = extract_audio_features(df)
 
 if __name__ == "__main__":
     app()

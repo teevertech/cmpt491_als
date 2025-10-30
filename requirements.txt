@@ -6,3 +6,10 @@ ruff
 tqdm
 typer
 -e .
+
+pytorch
+librosa
+matplotlib
+numpy
+pandas
+praat-parselmouth
