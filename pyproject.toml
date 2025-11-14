@@ -15,7 +15,7 @@ classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License"
 ]
-requires-python = "~=3.10.0"
+python = ">=3.10,<3.12"
 
 
 [tool.ruff]
@@ -29,4 +29,3 @@ extend-select = ["I"]  # Add import sorting
 [tool.ruff.lint.isort]
 known-first-party = ["cmpt491_als"]
 force-sort-within-sections = true
-

@@ -7,9 +7,14 @@ tqdm
 typer
 -e .
 
-pytorch
+openpyxl
+torch
 librosa
 matplotlib
 numpy
 pandas
 praat-parselmouth
+
+torchaudio
+transformers
+seaborn
