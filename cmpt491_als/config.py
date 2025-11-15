@@ -80,7 +80,7 @@ def get_training_config(platform: str = "auto"):
         elif torch.backends.mps.is_available():
             platform = "m2"
         else:
-            platform = "m2"  # Conservative CPU fallback
+            platform = "cpu"  # Conservative CPU fallback
 
     if platform == "a100":
         logger.info("Using A100/GPU training configuration")

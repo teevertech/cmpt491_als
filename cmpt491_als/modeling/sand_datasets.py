@@ -4,9 +4,6 @@ SAND Dataset classes for ALS classification model training and evaluation.
 This module contains PyTorch dataset classes for the SAND competition data:
 - SANDDataset: For loading preprocessed tensors (used by train/predict scripts)
 - RawAudioDataset: For loading raw audio files (used by features.py)
-
-Located in modeling/ module since primary usage is for model training/evaluation.
-Works with any audio model (AST, Wav2Vec2, Whisper, etc.) for model comparison.
 """
 
 #sand_datasets.py
