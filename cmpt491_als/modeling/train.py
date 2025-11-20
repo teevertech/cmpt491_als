@@ -8,14 +8,15 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from transformers import ASTForAudioClassification, ASTFeatureExtractor
-from .sand_datasets import SANDDataset
+from cmpt491_als.modeling.sand_datasets import SANDDataset
+from cmpt491_als.modeling.elastic_ast_wrapper import ElasticASTForAudioClassification
 from cmpt491_als.config import (
     MODELS_DIR,
     PROCESSED_DATA_DIR,
     INTERIM_DATA_DIR,
     RAW_DATA_DIR,
     get_training_config,
-    MODEL_NAMES
+    MODEL_NAMES,
 )
 
 app = typer.Typer()
