@@ -113,7 +113,13 @@ class SANDDataset(Dataset):
         wav = self._load_waveform(wav_path)
         log_mel = self._waveform_to_logmel(wav)
 
-        label = int(row["label"])
+        raw_label = int(row["label"])
+
+        # Convert from 1–5 → 0–4
+        label = raw_label - 1
+
+        if not (0 <= label < 5):
+            raise ValueError(f"Label out of range after shift: {raw_label} -> {label}")
 
         sample = {
             "input_values": log_mel,  # (T, F)
