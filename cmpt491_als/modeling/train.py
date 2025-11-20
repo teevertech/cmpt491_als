@@ -102,7 +102,7 @@ def fit(
         "auto", help="Hardware preset: auto, a100, m2, etc."
     ),
     use_specaugment: bool = typer.Option(
-        True, help="Apply SpecAugment during training."
+        False, help="Apply SpecAugment during training."
     ),
 ):
     """
@@ -181,11 +181,13 @@ def fit(
 
     # Scheduler: warmup + cosine ---------------------------------
     total_steps = num_epochs * len(train_loader)
-    warmup_steps = int(0.1 * total_steps)
+    warmup_steps = int(cfg["warmup_ratio"] * total_steps)
     min_lr = lr / 20
 
-    scheduler = build_warmup_cosine_scheduler(
-        optimizer, warmup_steps, total_steps, min_lr
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        optimizer,
+        T_0=total_steps // 4,
+        T_mult=2,
     )
 
     # Output dir --------------------------------------------------
