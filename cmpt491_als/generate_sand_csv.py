@@ -1,6 +1,6 @@
 import csv
 from pathlib import Path
-
+#
 DATA_DIR = Path(__file__).resolve().parent
 RAW_DIR = DATA_DIR / "raw" / "SAND" / "task1" / "training"
 OUTPUT_CSV = DATA_DIR / "raw" / "sand_dataset.csv"
