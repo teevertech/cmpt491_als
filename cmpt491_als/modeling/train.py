@@ -48,25 +48,24 @@ def spec_augment_batch(
             t = random.randint(0, time_mask_param)
             if t > 0 and T - t > 0:
                 t0 = random.randint(0, T - t)
-                x[b, t0:t0 + t, :] = 0.0
+                x[b, t0 : t0 + t, :] = 0.0
 
             # Freq mask
             f = random.randint(0, freq_mask_param)
             if f > 0 and F - f > 0:
                 f0 = random.randint(0, F - f)
-                x[b, :, f0:f0 + f] = 0.0
+                x[b, :, f0 : f0 + f] = 0.0
 
     return x
 
 
 # -------------------------------------------------------------------------
-# Mixup (with soft labels)
+# Mixup utilities
 # -------------------------------------------------------------------------
-def one_hot(
-    labels: torch.Tensor,
-    num_classes: int,
-    device: torch.device,
-) -> torch.Tensor:
+def one_hot(labels: torch.Tensor, num_classes: int, device: torch.device) -> torch.Tensor:
+    """
+    Convert integer labels (B,) to one-hot (B, C).
+    """
     return F.one_hot(labels, num_classes=num_classes).float().to(device)
 
 
@@ -74,21 +73,20 @@ def mixup_batch(
     x: torch.Tensor,
     y: torch.Tensor,
     num_classes: int,
-    alpha: float = 0.1,
-    label_smoothing: float = 0.02,
+    alpha: float = 0.4,
+    label_smoothing: float = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Mixup on inputs + labels.
 
     x: (B, T, F)
     y: (B,) int64 labels (0..num_classes-1)
-
     Returns:
       mixed_x: (B, T, F)
       mixed_y: (B, C) soft labels
     """
     if alpha <= 0.0:
-        # Just return (optionally) smoothed one-hot labels
+        # just return smoothed one-hot labels
         y_oh = one_hot(y, num_classes, x.device)
         if label_smoothing > 0.0:
             y_oh = (1 - label_smoothing) * y_oh + label_smoothing / num_classes
@@ -112,7 +110,7 @@ def mixup_batch(
 
 
 # -------------------------------------------------------------------------
-# Focal Loss that supports hard or soft labels
+# Focal Loss supporting hard & soft labels
 # -------------------------------------------------------------------------
 class FocalLoss(torch.nn.Module):
     """
@@ -130,9 +128,9 @@ class FocalLoss(torch.nn.Module):
         reduction: str = "mean",
     ):
         super().__init__()
-        # Store alpha as a buffer so it moves with the model
+        # Stored as buffer so it moves w/ the model but doesn't show as a parameter
         if alpha is not None:
-            self.register_buffer("alpha", alpha)
+            self.register_buffer("alpha", alpha.clone().detach())
         else:
             self.alpha = None
         self.gamma = gamma
@@ -143,19 +141,19 @@ class FocalLoss(torch.nn.Module):
         logits: (B, C)
         target:
           - (B,) int64
-          - or (B, C) float (soft)
+          - or (B, C) float (soft labels)
         """
-        # Compute loss in float32 for stability
+        # Always do loss math in fp32 for stability
         logits = logits.float()
         log_probs = F.log_softmax(logits, dim=-1)
         probs = log_probs.exp()
         B, C = logits.shape
 
         if target.dim() == 1:
-            # Hard labels → one-hot
+            # Hard labels → convert to one-hot
             target_oh = F.one_hot(target, num_classes=C).float()
         else:
-            target_oh = target  # soft labels
+            target_oh = target  # already soft labels
 
         # p_t = sum over classes of (p * y)
         pt = (probs * target_oh).sum(dim=-1).clamp(min=1e-7, max=1.0)
@@ -185,9 +183,13 @@ class FocalLoss(torch.nn.Module):
 # Class weights from train.csv
 # -------------------------------------------------------------------------
 def compute_class_weights(train_csv: Path, num_classes: int = 5) -> torch.Tensor:
+    """
+    Compute inverse-frequency class weights from train.csv.
+    Assumes labels in CSV are 1..5; SANDDataset subtracts 1 → 0..4.
+    """
     df = pd.read_csv(train_csv)
     raw_labels = df["label"].values
-    labels = raw_labels - 1  # SAND labels 1..5 → 0..4
+    labels = raw_labels - 1  # match SANDDataset behavior
 
     counts = np.bincount(labels, minlength=num_classes)
     total = counts.sum()
@@ -198,14 +200,14 @@ def compute_class_weights(train_csv: Path, num_classes: int = 5) -> torch.Tensor
 
 
 # -------------------------------------------------------------------------
-# Optionally freeze early ElasticAST layers
+# Optionally freeze early ElasticAST transformer blocks
 # -------------------------------------------------------------------------
 def freeze_backbone_layers(
     model: ElasticASTForAudioClassification,
     num_blocks_to_freeze: int = 4,
 ) -> None:
     """
-    Tries to freeze the first N transformer blocks of ElasticAST.
+    Freeze the first N transformer blocks of ElasticAST.
     Safe no-op if structure doesn't match expectations.
     """
     enc = getattr(model, "encoder", None)
@@ -218,7 +220,6 @@ def freeze_backbone_layers(
         logger.warning("No `blocks` on encoder; skipping freezing.")
         return
 
-    # ElasticAST uses CustomSequential(modules_list=...)
     modules_list = getattr(blocks, "modules_list", None)
     if modules_list is None:
         layers = list(blocks.children())
@@ -242,22 +243,54 @@ def freeze_backbone_layers(
 # -------------------------------------------------------------------------
 @app.command()
 def fit(
-    platform: str = typer.Option("auto", help="Hardware preset (unused, for future)."),
-    use_specaugment: bool = typer.Option(False, help="Apply SpecAugment."),
-    use_mixup: bool = typer.Option(True, help="Apply Mixup."),
-    mixup_alpha: float = typer.Option(0.1, help="Beta alpha for Mixup."),
-    label_smoothing: float = typer.Option(0.0, help="Label smoothing for hard labels."),
-    freeze_blocks: int = typer.Option(0, help="Number of ElasticAST backbone blocks to freeze."),
+    platform: str = typer.Option(
+        "auto",
+        help="Hardware preset (used by get_training_config).",
+    ),
+    use_specaugment: bool = typer.Option(
+        True,
+        help="Apply SpecAugment during training.",
+    ),
+    use_mixup: bool = typer.Option(
+        True,
+        help="Apply Mixup during training.",
+    ),
+    mixup_alpha: float = typer.Option(
+        0.2,
+        help="Beta alpha for Mixup. 0 disables mixup even if use_mixup=True.",
+    ),
+    label_smoothing: float = typer.Option(
+        0.02,
+        help="Label smoothing for hard labels (and in mixup targets).",
+    ),
+    freeze_blocks: int = typer.Option(
+        0,
+        help="Number of ElasticAST backbone blocks to freeze at start.",
+    ),
+    focal_gamma: float = typer.Option(
+        1.5,
+        help="Gamma parameter for Focal Loss.",
+    ),
+    max_grad_norm: float = typer.Option(
+        1.0,
+        help="Max gradient norm for gradient clipping.",
+    ),
+    weight_decay: float = typer.Option(
+        1e-2,
+        help="Weight decay for AdamW optimizer.",
+    ),
 ):
     """
     Train ElasticAST on the SAND dataset with:
 
-    - Class-weighted focal loss
+    - Class-weighted Focal Loss
     - SpecAugment
-    - Mixup (soft labels)
+    - Mixup
+    - Label smoothing
     - Cosine LR with warmup
     - Gradient clipping
     - Optional backbone freezing
+    - AMP (automatic mixed precision)
     """
 
     logger.info("========== TRAINING START ==========")
@@ -268,9 +301,11 @@ def fit(
     if torch.cuda.is_available():
         device = torch.device("cuda")
         logger.info("Using CUDA.")
+        amp_enabled = True
     else:
         device = torch.device("cpu")
         logger.info("Using CPU.")
+        amp_enabled = False
 
     # ---------------------------------------------------------------------
     # Config
@@ -279,7 +314,7 @@ def fit(
     num_epochs = cfg["num_epochs"]
     batch_size = cfg["batch_size"]
     lr = cfg["learning_rate"]
-    warmup_ratio = cfg["warmup_ratio"]
+    warmup_ratio = cfg.get("warmup_ratio", 0.05)
     num_workers = cfg["num_workers"]
 
     logger.info(f"Training config: {cfg}")
@@ -324,7 +359,7 @@ def fit(
     # ---------------------------------------------------------------------
     model = ElasticASTForAudioClassification(num_labels=5).to(device)
 
-    # Lazy-init encoder using first batch (ElasticAST needs real shape)
+    # Lazy-init encoder using first batch
     init_batch = next(iter(train_loader))
     with torch.no_grad():
         _ = model(init_batch["input_values"].to(device))
@@ -338,20 +373,27 @@ def fit(
     # Loss (Class-weighted Focal Loss)
     # ---------------------------------------------------------------------
     class_weights = compute_class_weights(train_csv, num_classes=5).to(device)
-    focal_loss = FocalLoss(alpha=class_weights, gamma=1.5, reduction="mean")
+    focal_loss = FocalLoss(alpha=class_weights, gamma=focal_gamma, reduction="mean")
 
     # ---------------------------------------------------------------------
     # Optimizer + Scheduler
     # ---------------------------------------------------------------------
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
+    # Only trainable params (in case some blocks are frozen)
+    trainable_params = [p for p in model.parameters() if p.requires_grad]
+
+    optimizer = torch.optim.AdamW(
+        trainable_params,
+        lr=lr,
+        weight_decay=weight_decay,
+    )
 
     total_steps = num_epochs * len(train_loader)
-    warmup_steps = int(warmup_ratio * total_steps)
-    warmup_steps = max(warmup_steps, 1)  # avoid zero
+    warmup_steps = max(int(warmup_ratio * total_steps), 1)
 
+    # Warmup: tiny start_factor (cannot be 0)
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=1e-8,  # tiny start (must be > 0)
+        start_factor=1e-3,
         end_factor=1.0,
         total_iters=warmup_steps,
     )
@@ -368,7 +410,7 @@ def fit(
     )
 
     # AMP scaler
-    scaler = GradScaler() if device.type == "cuda" else None
+    scaler = GradScaler(enabled=amp_enabled)
 
     # ---------------------------------------------------------------------
     # Output directory
@@ -390,61 +432,54 @@ def fit(
         train_losses = []
 
         for batch in train_loader:
-            x = batch["input_values"].to(device)
-            y = batch["labels"].to(device)  # (B,) ints 0..4
+            x = batch["input_values"].to(device)  # (B, T, F)
+            y = batch["labels"].to(device)        # (B,) ints 0..4
 
-            # SpecAugment first (on spectrograms)
+            # SpecAugment (on input spectrograms)
             if use_specaugment:
                 x = spec_augment_batch(x)
 
             # Mixup (produces soft labels)
-            if use_mixup:
+            if use_mixup and mixup_alpha > 0.0:
                 x, y_soft = mixup_batch(
-                    x,
-                    y,
+                    x, y,
                     num_classes=5,
                     alpha=mixup_alpha,
                     label_smoothing=label_smoothing,
                 )
+                targets = y_soft
             else:
+                # Hard labels, possibly with label smoothing
                 if label_smoothing > 0.0:
                     y_soft = one_hot(y, num_classes=5, device=device)
                     y_soft = (1 - label_smoothing) * y_soft + label_smoothing / 5
+                    targets = y_soft
                 else:
-                    y_soft = None
+                    targets = y  # hard labels
 
             optimizer.zero_grad()
 
-            if scaler:
-                # AMP forward
+            if amp_enabled:
                 with autocast():
                     outputs = model(x)
-                    logits = outputs.logits  # may be fp16
+                    logits = outputs.logits  # may be fp16 internally
 
-                # Loss in fp32
-                if y_soft is not None:
-                    loss = focal_loss(logits, y_soft)
-                else:
-                    loss = focal_loss(logits, y)
+                # Compute loss in fp32 for stability
+                loss = focal_loss(logits, targets)
 
                 scaler.scale(loss).backward()
-
                 # Gradient clipping
                 scaler.unscale_(optimizer)
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 outputs = model(x)
                 logits = outputs.logits
-                if y_soft is not None:
-                    loss = focal_loss(logits, y_soft)
-                else:
-                    loss = focal_loss(logits, y)
+                loss = focal_loss(logits, targets)
 
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_grad_norm)
                 optimizer.step()
 
             scheduler.step()
@@ -466,14 +501,19 @@ def fit(
                 x = batch["input_values"].to(device)
                 y = batch["labels"].to(device)
 
-                outputs = model(x)
-                logits = outputs.logits.float()  # ensure fp32 for metrics
+                if amp_enabled:
+                    with autocast():
+                        outputs = model(x)
+                        logits = outputs.logits
+                else:
+                    outputs = model(x)
+                    logits = outputs.logits
 
-                # Use hard labels in validation
+                # Use hard labels in validation (no mixup)
                 val_loss = focal_loss(logits, y)
                 val_losses.append(val_loss.item())
 
-                preds = logits.argmax(dim=-1).cpu().numpy()
+                preds = logits.float().argmax(dim=-1).cpu().numpy()
                 val_preds.extend(preds)
                 val_targets.extend(y.cpu().numpy())
 
