@@ -73,7 +73,7 @@ def create_dataloaders(
 
 
 @app.command("fit")
-def fit(
+def fit_command(
     platform: str = typer.Option(
         "auto",
         help="Hardware preset: auto, a100, m2, etc.",
