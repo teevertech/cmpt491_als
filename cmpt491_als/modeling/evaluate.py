@@ -136,3 +136,28 @@ def evaluate_command(
 
     logger.info("Saved confusion matrix → confusion_matrix.png")
     logger.info("Evaluation complete.")
+
+     # ------------------------------------------------------------
+    # 8. Generate results.csv submission file
+    # ------------------------------------------------------------
+    import pandas as pd
+    from pathlib import Path
+
+    # Load the original test metadata to get IDs
+    test_df = pd.read_csv(test_csv)
+
+    # Your predictions are 0–4 → convert to 1–5
+    preds_1_to_5 = [p + 1 for p in all_preds]
+
+    # Build submission DataFrame
+    submission = pd.DataFrame({
+        "ID": test_df["ID"],        # Must match exactly the test set order
+        "CLASS": preds_1_to_5       # Must be ints 1–5
+    })
+
+    # Save results.csv
+    out_path = Path("results.csv")
+    submission.to_csv(out_path, index=False)
+
+    logger.info(f"Saved submission CSV → {out_path.absolute()}")
+    logger.info("Finished creating results.csv")
