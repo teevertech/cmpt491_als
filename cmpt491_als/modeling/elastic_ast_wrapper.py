@@ -55,11 +55,13 @@ class ElasticASTForAudioClassification(nn.Module):
     def forward(self, input_values, labels=None):
         """
         input_values: (batch, time, freq) from ASTFeatureExtractor
-        ElasticAST expects (batch, freq, time)
+        ElasticAST expects (batch, channels=1, freq, time)
         """
-        x = input_values.transpose(1, 2)  # (batch, freq, time)
+        # AST → ElasticAST layout
+        x = input_values.transpose(1, 2)      # (batch, freq, time)
+        x = x.unsqueeze(1)                    # (batch, 1, freq, time)
 
-        logits = self.encoder(x)  # (batch, num_labels)
+        logits = self.encoder(x)
 
         loss = None
         if labels is not None:
