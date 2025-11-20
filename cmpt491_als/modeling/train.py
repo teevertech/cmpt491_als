@@ -53,12 +53,15 @@ def create_dataloaders(
         f"Loaded dataset: {len(train_dataset)} train, {len(val_dataset)} val"
     )
 
+    from cmpt491_als.modeling.collate import pad_mels
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
         num_workers=num_workers,
         pin_memory=True,
+        collate_fn=pad_mels,
     )
 
     val_loader = DataLoader(
@@ -67,6 +70,7 @@ def create_dataloaders(
         shuffle=False,
         num_workers=num_workers,
         pin_memory=True,
+        collate_fn=pad_mels,
     )
 
     return train_loader, val_loader
