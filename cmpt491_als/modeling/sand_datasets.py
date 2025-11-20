@@ -7,7 +7,7 @@ This module contains PyTorch dataset classes for the SAND competition data:
 """
 
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import pandas as pd
 import torch
@@ -18,21 +18,31 @@ import torchaudio
 
 class SANDDataset(Dataset):
     """
-    Loads SAND CSVs of the form:
+    CSV formats supported:
 
-        filepath,label,ID,Age,Sex,Class
-        audio/phonationU/ID255_phonationU.wav,4,ID255,37,M,4
-        ...
+    TRAIN / VAL CSV:
+        filepath,label,ID,Age,Sex,...
+        audio/xyz.wav,4,ID001,37,M,...
 
-    and returns log-Mel tensors ready for ElasticAST.
+    TEST CSV (from XLSX):
+        filepath,ID,...
+        audio/xyz.wav,ID999,...
 
     __getitem__ returns:
+
+    TRAIN / VAL:
         {
-            "input_values": (T, F) float32 log-Mel,
-            "labels": int64 scalar,
-            "age": float or int,
-            "sex": str,
-            "id": str,
+            "input_values": (T, F),
+            "labels": int64,
+            "ids": str,
+            "age": int/float/None,
+            "sex": str/None
+        }
+
+    TEST:
+        {
+            "input_values": (T, F),
+            "ids": str
         }
     """
 
@@ -42,21 +52,28 @@ class SANDDataset(Dataset):
         metadata_csv: Path,
         target_sr: int = 16000,
         n_mels: int = 128,
+        max_width: int = 1024,
+        is_test: bool = False,
     ) -> None:
         super().__init__()
 
         self.audio_root = Path(audio_root)
         self.df = pd.read_csv(metadata_csv)
+        self.is_test = is_test
+        self.target_sr = target_sr
+        self.max_width = max_width
 
-        if "filepath" not in self.df.columns or "label" not in self.df.columns:
+        # Validate columns
+        if "filepath" not in self.df.columns:
+            raise ValueError(f"'filepath' missing in CSV: {self.df.columns.tolist()}")
+
+        if not is_test and "label" not in self.df.columns:
             raise ValueError(
-                "Expected at least 'filepath' and 'label' columns in "
-                f"{metadata_csv}, got: {self.df.columns.tolist()}"
+                "Training/validation CSV must include 'label' column.\n"
+                f"Got: {self.df.columns.tolist()}"
             )
 
-        self.target_sr = target_sr
-
-        # Mel-spec transform (AST defaults: 16kHz, 128 Mel bins)
+        # Prebuild MelSpectrogram transform
         self.mel_transform = torchaudio.transforms.MelSpectrogram(
             sample_rate=target_sr,
             n_fft=1024,
@@ -67,74 +84,77 @@ class SANDDataset(Dataset):
         )
 
         logger.info(
-            f"SANDDataset from {metadata_csv} with {len(self.df)} rows, "
-            f"audio_root={self.audio_root}"
+            f"SANDDataset: {metadata_csv} | {len(self.df)} samples | test={self.is_test}"
         )
 
+    # --------------------------------------------------------------
     def __len__(self) -> int:
         return len(self.df)
 
+    # --------------------------------------------------------------
     def _load_waveform(self, wav_path: Path) -> torch.Tensor:
-        wav, sr = torchaudio.load(str(wav_path))
-
-        # mix to mono
-        if wav.shape[0] > 1:
-            wav = wav.mean(dim=0, keepdim=True)
-
-        # resample if needed
-        if sr != self.target_sr:
-            wav = torchaudio.transforms.Resample(sr, self.target_sr)(wav)
-
-        return wav  # shape: (1, N)
-
-    def _waveform_to_logmel(self, wav: torch.Tensor) -> torch.Tensor:
-        """
-        wav: (1, N) float32 in [-1, 1]
-        returns: (T, F) log-Mel
-        """
-        mel = self.mel_transform(wav)  # (1, n_mels, T)
-        mel = mel.squeeze(0)           # (n_mels, T)
-
-        # log-mel
-        log_mel = torch.log(mel + 1e-6)  # (n_mels, T)
-        log_mel = log_mel.transpose(0, 1)  # (T, n_mels)
-
-        return log_mel
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        row = self.df.iloc[idx]
-
-        rel_path = str(row["filepath"])
-        wav_path = self.audio_root / rel_path
-
         if not wav_path.exists():
             raise FileNotFoundError(f"Missing audio file: {wav_path}")
 
+        wav, sr = torchaudio.load(str(wav_path))
+
+        # Convert to mono
+        if wav.shape[0] > 1:
+            wav = wav.mean(dim=0, keepdim=True)
+
+        # Resample
+        if sr != self.target_sr:
+            wav = torchaudio.transforms.Resample(sr, self.target_sr)(wav)
+
+        return wav.float()  # (1, N)
+
+    # --------------------------------------------------------------
+    def _waveform_to_logmel(self, wav: torch.Tensor) -> torch.Tensor:
+        mel = self.mel_transform(wav)        # (1, n_mels, T)
+        mel = mel.squeeze(0)                # (n_mels, T)
+
+        log_mel = torch.log(mel + 1e-6)     # (n_mels, T)
+        log_mel = log_mel.transpose(0, 1)   # (T, n_mels)
+
+        # Trim to ElasticAST window
+        if log_mel.shape[0] > self.max_width:
+            log_mel = log_mel[: self.max_width, :]
+
+        return log_mel
+
+    # --------------------------------------------------------------
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        row = self.df.iloc[idx]
+
+        wav_path = self.audio_root / str(row["filepath"])
         wav = self._load_waveform(wav_path)
         log_mel = self._waveform_to_logmel(wav)
 
-        MAX_WIDTH = 1024   # ElasticAST-pretrained window
+        # --------------------------------
+        # TEST MODE → no labels returned
+        # --------------------------------
+        if self.is_test:
+            return {
+                "ids": row["ID"],
+                "input_values": log_mel,
+            }
 
-        if log_mel.shape[0] > MAX_WIDTH:
-            log_mel = log_mel[:MAX_WIDTH, :]
-            
-        raw_label = int(row["label"])
-
-        # Convert from 1–5 → 0–4
-        label = raw_label - 1
+        # --------------------------------
+        # TRAIN/VAL MODE
+        # --------------------------------
+        label_raw = int(row["label"])
+        label = label_raw - 1  # convert 1–5 → 0–4
 
         if not (0 <= label < 5):
-            raise ValueError(f"Label out of range after shift: {raw_label} -> {label}")
+            raise ValueError(f"Invalid label {label_raw} → {label}")
 
-        sample = {
-            "input_values": log_mel,  # (T, F)
+        return {
+            "ids": row.get("ID", None),
+            "input_values": log_mel,
             "labels": torch.tensor(label, dtype=torch.long),
-            "id": row.get("ID", None),
             "age": row.get("Age", None),
             "sex": row.get("Sex", None),
         }
-
-        return sample
 
 
 class RawAudioDataset(Dataset):
