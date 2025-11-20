@@ -1,7 +1,7 @@
 import subprocess
 from pathlib import Path
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+SCRIPT_DIR = Path(__file__).resolve().parent #
 
 def main():
     print("===== [1/2] Building INTERIM CSV =====")
