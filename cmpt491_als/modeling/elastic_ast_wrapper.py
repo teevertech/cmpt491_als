@@ -1,16 +1,10 @@
 import sys
 from pathlib import Path
-from typing import Optional
-
 import torch
 import torch.nn as nn
 from transformers.modeling_outputs import SequenceClassifierOutput
 
-# ---------------------------------------------------------------------
-# Wire in the local ElasticAST repo
-#   Expecting: /workspace/ElasticAST/src/models/elasticast.py
-#   Adjust ELASTIC_ROOT if your layout is different.
-# ---------------------------------------------------------------------
+# Correctly locate ElasticAST repo
 ELASTIC_ROOT = Path(__file__).resolve().parents[3] / "ElasticAST"
 sys.path.insert(0, str(ELASTIC_ROOT / "src"))
 
@@ -19,68 +13,72 @@ from models.elasticast import ElasticAST  # type: ignore
 
 class ElasticASTForAudioClassification(nn.Module):
     """
-    Thin wrapper that:
-      * takes log-Mel spectrograms of shape (B, T, F),
-      * reshapes to (B, 1, F, T) for ElasticAST,
-      * returns a standard HuggingFace-style SequenceClassifierOutput.
-
-    NOTE: The exact __init__ signature of ElasticAST is defined in
-    ElasticAST/src/models/elasticast.py. The arguments below follow the
-    AST convention (label_dim, input_fdim, etc). If you get a
-    TypeError about unexpected keywords, open that file and tweak the
-    call in __init__ accordingly.
+    Wrapper for the GitHub ElasticAST model.
+    Automatically infers sample_size from the input (mel-spec),
+    and constructs the inner ElasticAST on first forward().
     """
 
     def __init__(
         self,
         num_labels: int = 5,
-        input_fdim: int = 128,
-        imagenet_pretrain: bool = False,
-        audioset_pretrain: bool = False,
-        model_size: str = "base384",
-        **kwargs,
-    ) -> None:
+        n_mels: int = 128,
+        patch_size: int = 16,
+        dim: int = 192,
+        depth: int = 6,
+        heads: int = 3,
+    ):
         super().__init__()
 
         self.num_labels = num_labels
+        self.n_mels = n_mels
+        self.patch_size = patch_size
+        self.dim = dim
+        self.depth = depth
+        self.heads = heads
 
-        # IMPORTANT:
-        #   - check ElasticAST.__init__ in the repo and adjust kwargs
-        #     if names differ (e.g. label_dim vs num_classes).
-        self.encoder = ElasticAST(
-            label_dim=num_labels,
-            input_fdim=input_fdim,
-            imagenet_pretrain=imagenet_pretrain,
-            audioset_pretrain=audioset_pretrain,
-            model_size=model_size,
-            **kwargs,
-        )
+        # Model is created lazily because sample_width depends on input
+        self.encoder = None
 
         self.loss_fn = nn.CrossEntropyLoss()
 
-    def forward(
-        self,
-        input_values: torch.Tensor,
-        labels: Optional[torch.Tensor] = None,
-    ) -> SequenceClassifierOutput:
+    def _build_encoder(self, sample_height: int, sample_width: int):
         """
-        Args
-        ----
-        input_values:
-            Float tensor of shape (batch, time, freq) containing
-            log-Mel spectrograms.
-        labels:
-            Optional int64 tensor of shape (batch,) with class indices
-            in [0, num_labels - 1].
+        Build the ElasticAST model based on actual mel dimensions.
+        """
 
-        Returns
-        -------
-        SequenceClassifierOutput
-            .logits: (batch, num_labels)
-            .loss: scalar (if labels is not None)
+        patch = self.patch_size
+
+        # Ensure patch_size divides both dimensions
+        if sample_height % patch != 0:
+            raise ValueError(f"n_mels={sample_height} must be divisible by patch_size={patch}")
+        if sample_width % patch != 0:
+            raise ValueError(f"time_frames={sample_width} must be divisible by patch_size={patch}")
+
+        self.encoder = ElasticAST(
+            sample_size=(sample_height, sample_width),
+            patch_size=patch,
+            num_classes=self.num_labels,
+            dim=self.dim,
+            depth=self.depth,
+            heads=self.heads,
+            channels=1,  # spectrogram = 1 channel
+        )
+
+    def forward(self, input_values: torch.Tensor, labels=None) -> SequenceClassifierOutput:
         """
-        # (B, T, F)  →  (B, F, T)  →  (B, 1, F, T)
-        x = input_values.transpose(1, 2)
+        input_values: (B, T, F) where F = mel bins (should equal n_mels)
+        """
+
+        # Standardize orientation: (B, F, T)
+        x = input_values.transpose(1, 2)  # (B, F, T)
+
+        B, F, T = x.shape
+
+        # Lazy init ElasticAST using real sample size
+        if self.encoder is None:
+            self._build_encoder(sample_height=F, sample_width=T)
+
+        # Prepare for ElasticAST: (B, 1, F, T)
         x = x.unsqueeze(1)
 
         logits = self.encoder(x)
