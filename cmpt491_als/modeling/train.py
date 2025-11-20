@@ -122,6 +122,8 @@ def fit(
     # Class weights ----------------------------------------------
     train_csv = INTERIM_DATA_DIR / "train.csv"
     class_weights = compute_class_weights(train_csv, num_classes=5).to(device)
+    if device.type == "cuda":
+        class_weights = class_weights.half()
     loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
     # Model -------------------------------------------------------
@@ -199,7 +201,7 @@ def fit(
 
         for batch in train_loader:
             x = batch["input_values"].to(device)
-            y = batch["labels"].to(device)
+            y = batch["labels"].to(device).long()
 
             if use_specaugment:
                 x = spec_augment_batch(x)
