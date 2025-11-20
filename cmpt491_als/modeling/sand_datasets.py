@@ -6,218 +6,158 @@ This module contains PyTorch dataset classes for the SAND competition data:
 - RawAudioDataset: For loading raw audio files (used by features.py)
 """
 
-#sand_datasets.py
-import torch
-import torchaudio
-import pandas as pd
 from pathlib import Path
-from loguru import logger
+from typing import Dict, Any
+
+import pandas as pd
+import torch
 from torch.utils.data import Dataset
+from loguru import logger
+import torchaudio
 
 
 class SANDDataset(Dataset):
     """
-    PyTorch Dataset for SAND Task 1 (ALS severity classification).
+    Loads SAND CSVs of the form:
 
-    Option A: load raw waveforms directly from .wav files using the
-    "filepath" column in the metadata CSV, then apply ASTFeatureExtractor
-    on-the-fly to get model-ready input_values.
+        filepath,label,ID,Age,Sex,Class
+        audio/phonationU/ID255_phonationU.wav,4,ID255,37,M,4
+        ...
+
+    and returns log-Mel tensors ready for ElasticAST.
+
+    __getitem__ returns:
+        {
+            "input_values": (T, F) float32 log-Mel,
+            "labels": int64 scalar,
+            "age": float or int,
+            "sex": str,
+            "id": str,
+        }
     """
 
     def __init__(
         self,
-        audio_root: Path,          # e.g. RAW_DATA_DIR from config
-        metadata_csv: Path,        # e.g. data/interim/train.csv
-        feature_extractor=None,
-        target_sample_rate: int = 16000,
-        max_length_seconds: float = 5.0,  # adjust if you want longer crops
-    ):
+        audio_root: Path,
+        metadata_csv: Path,
+        target_sr: int = 16000,
+        n_mels: int = 128,
+    ) -> None:
+        super().__init__()
+
         self.audio_root = Path(audio_root)
-        self.metadata = pd.read_csv(metadata_csv)
-        self.feature_extractor = feature_extractor
-        self.target_sr = target_sample_rate
-        self.max_length = int(max_length_seconds * target_sample_rate)
+        self.df = pd.read_csv(metadata_csv)
 
-        self.samples = []
-        self._create_samples()
+        if "filepath" not in self.df.columns or "label" not in self.df.columns:
+            raise ValueError(
+                "Expected at least 'filepath' and 'label' columns in "
+                f"{metadata_csv}, got: {self.df.columns.tolist()}"
+            )
 
-        logger.info(f"Loaded {len(self.samples)} samples from {metadata_csv}")
-        if len(self.samples) > 0:
-            logger.info(f"Class distribution: {self._get_class_distribution()}")
+        self.target_sr = target_sr
 
-    def _create_samples(self):
-        """
-        Build list of valid audio samples from the metadata CSV.
+        # Mel-spec transform (AST defaults: 16kHz, 128 Mel bins)
+        self.mel_transform = torchaudio.transforms.MelSpectrogram(
+            sample_rate=target_sr,
+            n_fft=1024,
+            hop_length=320,
+            n_mels=n_mels,
+            f_min=0.0,
+            f_max=target_sr / 2,
+        )
 
-        Expects columns:
-          - filepath  (e.g. 'audio/phonationA/ID059_phonationA.wav')
-          - label     (1..5 from your pipeline – we convert to 0..4 here)
-          - optional: ID, Age, Sex
-        """
-        for _, row in self.metadata.iterrows():
-            rel_path = row["filepath"]
-            raw_label = int(row["label"])
+        logger.info(
+            f"SANDDataset from {metadata_csv} with {len(self.df)} rows, "
+            f"audio_root={self.audio_root}"
+        )
 
-            audio_path = self.audio_root / rel_path  # audio_root = RAW_DATA_DIR
+    def __len__(self) -> int:
+        return len(self.df)
 
-            if not audio_path.exists():
-                logger.warning(f"[SANDDataset] Audio file missing, skipping: {audio_path}")
-                continue
+    def _load_waveform(self, wav_path: Path) -> torch.Tensor:
+        wav, sr = torchaudio.load(str(wav_path))
 
-            # Convert labels from 1..5 → 0..4
-            label = raw_label - 1 if raw_label != -1 else -1
+        # mix to mono
+        if wav.shape[0] > 1:
+            wav = wav.mean(dim=0, keepdim=True)
 
-            # Try to get subject_id from either CSV or filename
-            subject_id = row.get("ID", None)
-            if pd.isna(subject_id):
-                fname = audio_path.stem  # ID059_phonationA
-                subject_id = fname.split("_")[0]
-
-            # Extract audio_task from filename (phonationA, etc.)
-            fname = audio_path.stem
-            parts = fname.split("_")
-            audio_task = parts[1] if len(parts) > 1 else None
-
-            self.samples.append({
-                "audio_path": audio_path,
-                "label": label,
-                "subject_id": subject_id,
-                "audio_task": audio_task,
-                "age": row.get("Age", None),
-                "sex": row.get("Sex", None),
-            })
-
-    def _get_class_distribution(self):
-        """Get distribution of classes in the dataset."""
-        labels = [s["label"] for s in self.samples if s["label"] != -1]
-        if len(labels) == 0:
-            return {}
-        unique, counts = torch.unique(torch.tensor(labels), return_counts=True)
-        return dict(zip(unique.tolist(), counts.tolist()))
-
-    def __len__(self):
-        return len(self.samples)
-
-    def _load_and_standardize_waveform(self, audio_path: Path) -> torch.Tensor:
-        """
-        Load audio, convert to mono, resample, and center-crop / pad
-        to fixed length (max_length).
-        """
-        waveform, sr = torchaudio.load(str(audio_path))
-
-        # Mono
-        if waveform.shape[0] > 1:
-            waveform = waveform.mean(dim=0, keepdim=True)
-
-        # Resample if needed
+        # resample if needed
         if sr != self.target_sr:
-            resampler = torchaudio.transforms.Resample(
-                orig_freq=sr,
-                new_freq=self.target_sr
-            )
-            waveform = resampler(waveform)
+            wav = torchaudio.transforms.Resample(sr, self.target_sr)(wav)
 
-        # Center crop or pad to max_length
-        T = waveform.shape[1]
-        if T > self.max_length:
-            start = (T - self.max_length) // 2
-            waveform = waveform[:, start:start + self.max_length]
-        elif T < self.max_length:
-            pad = self.max_length - T
-            waveform = torch.nn.functional.pad(waveform, (0, pad))
+        return wav  # shape: (1, N)
 
-        return waveform  # (1, max_length)
+    def _waveform_to_logmel(self, wav: torch.Tensor) -> torch.Tensor:
+        """
+        wav: (1, N) float32 in [-1, 1]
+        returns: (T, F) log-Mel
+        """
+        mel = self.mel_transform(wav)  # (1, n_mels, T)
+        mel = mel.squeeze(0)           # (n_mels, T)
 
-    def __getitem__(self, idx):
-        """Get a single sample for training/inference."""
-        sample = self.samples[idx]
+        # log-mel
+        log_mel = torch.log(mel + 1e-6)  # (n_mels, T)
+        log_mel = log_mel.transpose(0, 1)  # (T, n_mels)
 
-        # Load and standardize waveform
-        waveform = self._load_and_standardize_waveform(sample["audio_path"])
+        return log_mel
 
-        # Convert to numpy for ASTFeatureExtractor
-        waveform_np = waveform.squeeze(0).numpy()
+    def __getitem__(self, idx: int) -> Dict[str, Any]:
+        row = self.df.iloc[idx]
 
-        # Use AST feature extractor (HuggingFace AST)
-        if self.feature_extractor is not None:
-            inputs = self.feature_extractor(
-                waveform_np,
-                sampling_rate=self.target_sr,
-                return_tensors="pt"
-            )
-            # ASTFeatureExtractor returns (1, time, freq) or similar
-            audio_features = inputs["input_values"].squeeze(0)
+        rel_path = str(row["filepath"])
+        wav_path = self.audio_root / rel_path
 
-        # Fallback: return raw waveform (for debugging / non-AST models)
-        else:
-            audio_features = waveform.squeeze(0)
+        if not wav_path.exists():
+            raise FileNotFoundError(f"Missing audio file: {wav_path}")
 
-        # Make sure labels are valid LongTensors
-        label = sample["label"]
-        if label == -1:
-            label = 0  # or whatever you want for "unknown"
-        label_tensor = torch.tensor(label, dtype=torch.long)
+        wav = self._load_waveform(wav_path)
+        log_mel = self._waveform_to_logmel(wav)
 
-        data_sample = {
-            "input_values": audio_features,      # (time, freq) for AST / ElasticAST
-            "labels": label_tensor,              # 0..4
-            "subject_id": sample["subject_id"],
-            "audio_task": sample["audio_task"],
-            "metadata": {
-                "age": sample["age"],
-                "sex": sample["sex"],
-            },
+        label = int(row["label"])
+
+        sample = {
+            "input_values": log_mel,  # (T, F)
+            "labels": torch.tensor(label, dtype=torch.long),
+            "id": row.get("ID", None),
+            "age": row.get("Age", None),
+            "sex": row.get("Sex", None),
         }
 
-        return data_sample
+        return sample
 
 
 class RawAudioDataset(Dataset):
     """
-    Dataset for loading raw audio files during feature preprocessing.
-    Used by features.py to convert raw audio to preprocessed tensors.
+    Lightweight dataset used by your preprocessing / features.py pipeline.
+    (You can keep your existing implementation if you already use it.)
     """
 
-    def __init__(self, data_dir: Path, metadata_csv: Path):
+    def __init__(self, data_dir: Path, metadata_csv: Path) -> None:
         self.data_dir = Path(data_dir)
-        self.metadata = pd.read_csv(metadata_csv)
-        self.audio_tasks = [
-            "phonationA", "phonationE", "phonationI", "phonationO", "phonationU",
-            "rhythmKA", "rhythmPA", "rhythmTA"
-        ]
+        self.df = pd.read_csv(metadata_csv)
+
+        if "filepath" not in self.df.columns:
+            raise ValueError(
+                "RawAudioDataset expects a 'filepath' column in the CSV."
+            )
 
         self.samples = []
-        self._create_samples()
+        for _, row in self.df.iterrows():
+            wav_path = self.data_dir / row["filepath"]
+            if wav_path.exists():
+                self.samples.append(
+                    {
+                        "path": wav_path,
+                        "label": row.get("label", None),
+                    }
+                )
+            else:
+                logger.warning(f"Missing raw audio: {wav_path}")
 
-        logger.info(f"Found {len(self.samples)} raw audio files to process")
+        logger.info(f"RawAudioDataset built with {len(self.samples)} samples")
 
-    def _create_samples(self):
-        """Create list of raw audio files to process"""
-        for _, row in self.metadata.iterrows():
-            subject_id = row['ID']
-            subject_dir = self.data_dir / subject_id
-
-            if not subject_dir.exists():
-                logger.warning(f"Subject directory not found: {subject_dir}")
-                continue
-
-            for task in self.audio_tasks:
-                audio_file = subject_dir / f"{subject_id}_{task}.wav"
-                if audio_file.exists():
-                    self.samples.append({
-                        'subject_id': subject_id,
-                        'audio_file': audio_file,
-                        'audio_task': task,
-                        'label': row['Class'] - 1,
-                        'age': row['Age'],
-                        'sex': row['Sex']
-                    })
-                else:
-                    logger.warning(f"Raw audio file not found: {audio_file}")
-
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.samples)
 
-    def __getitem__(self, idx):
-        """Get a single raw audio sample for preprocessing."""
+    def __getitem__(self, idx: int):
         return self.samples[idx]
