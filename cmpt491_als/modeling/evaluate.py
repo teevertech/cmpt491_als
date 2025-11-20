@@ -53,33 +53,43 @@ def evaluate_command(
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    # Load checkpoint
+    # 1. Paths ----------------------------------------------------
     ckpt_path = MODELS_DIR / checkpoint_name
-    # Force encoder init using first test batch
-    init_batch = next(iter(test_loader))
-
-    model = load_model(
-        str(ckpt_path),
-        num_labels=5,
-        device=device,
-        init_batch=init_batch,
-    )
-
-    # Load test dataset
     test_csv = INTERIM_DATA_DIR / "test.csv"
+
+    # 2. Load test dataset ----------------------------------------
     test_dataset = SANDDataset(
         audio_root=RAW_DATA_DIR,
         metadata_csv=test_csv
     )
 
+    # 3. Create test DataLoader BEFORE model initialization -------
     test_loader = DataLoader(
         test_dataset,
-        batch_size=1,           # Evaluate one by one
+        batch_size=1,
         shuffle=False,
         num_workers=4,
         collate_fn=pad_mels,
     )
 
+    # 4. Grab first batch to initialize encoder -------------------
+    init_batch = next(iter(test_loader))
+
+    # 5. Load model with lazy encoder init ------------------------
+    model = ElasticASTForAudioClassification(num_labels=5).to(device)
+    model.eval()
+
+    # ---- initialize encoder from real sample ----
+    with torch.no_grad():
+        x = init_batch["input_values"].to(device)
+        _ = model(x)  # builds encoder with correct shape
+
+    # ---- now load weights ----
+    logger.info(f"Loading model weights from: {ckpt_path}")
+    state_dict = torch.load(str(ckpt_path), map_location=device)
+    model.load_state_dict(state_dict, strict=True)
+
+    # 6. Run inference on all test samples ------------------------
     all_preds = []
     all_labels = []
 
@@ -88,21 +98,26 @@ def evaluate_command(
     with torch.no_grad():
         for batch in test_loader:
             x = batch["input_values"].to(device)
-            y = batch["labels"].cpu().numpy()[0]
+            y = batch["labels"].item()
 
             outputs = model(x)
             logits = outputs.logits.cpu()
-            pred = torch.argmax(logits, dim=-1).numpy()[0]
+            pred = torch.argmax(logits, dim=-1).item()
 
             all_preds.append(pred)
             all_labels.append(y)
 
-    # Create confusion matrix
+    # 7. Confusion matrix + report -------------------------------
+    from sklearn.metrics import confusion_matrix, classification_report
+    import seaborn as sns
+    import matplotlib.pyplot as plt
+
     cm = confusion_matrix(all_labels, all_preds)
+
     print("\nClassification Report:\n")
     print(classification_report(all_labels, all_preds, digits=4))
 
-    labels = [0, 1, 2, 3, 4]  # Your class labels (0–4 after shifting)
+    labels = [0, 1, 2, 3, 4]
 
     plt.figure(figsize=(8, 6))
     sns.heatmap(
