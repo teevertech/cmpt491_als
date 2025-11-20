@@ -30,9 +30,9 @@ app = typer.Typer()
 # -------------------------------------------------------------------------
 def spec_augment_batch(
     x: torch.Tensor,
-    time_mask_param: int = 20,
-    freq_mask_param: int = 8,
-    num_masks: int = 1,
+    time_mask_param: int = 48,
+    freq_mask_param: int = 16,
+    num_masks: int = 2,
 ) -> torch.Tensor:
     """
     Simple in-batch SpecAugment on mel spectrograms.
@@ -256,7 +256,7 @@ def fit(
         help="Apply Mixup during training.",
     ),
     mixup_alpha: float = typer.Option(
-        0.2,
+        0.4,
         help="Beta alpha for Mixup. 0 disables mixup even if use_mixup=True.",
     ),
     label_smoothing: float = typer.Option(
