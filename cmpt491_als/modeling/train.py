@@ -106,7 +106,7 @@ def fit(
     batch_size    = cfg["batch_size"]
     num_epochs    = cfg["num_epochs"]
     lr            = cfg["learning_rate"]
-    warmup_frac   = cfg["warmup_frac"]
+    warmup_ratio   = cfg["warmup_ratio"]
     num_workers   = cfg["num_workers"]
 
     logger.info(f"Training config: {cfg}")
