@@ -1,12 +1,12 @@
 import torch
 
 PATCH_SIZE = 16
-FIXED_T = 2048    # <<< IMPORTANT: must match training length!
+FIXED_T = 4096    # <<< IMPORTANT: must match training length!
 
 
 def pad_mels(batch):
     """
-    Pads all mel spectrograms to FIXED_T (1024) frames,
+    Pads all mel spectrograms to FIXED_T (4096) frames,
     ensuring the time dimension is ALWAYS identical across
     training, validation, and testing.
     
