@@ -1,32 +1,57 @@
 import csv
+import pandas as pd
 from pathlib import Path
-#
+
 DATA_DIR = Path(__file__).resolve().parent
-RAW_DIR = DATA_DIR / "raw" / "SAND" / "task1" / "training"
+RAW_TASK1_DIR = DATA_DIR / "raw" / "SAND" / "task1" / "training"
+METADATA_XLSX = DATA_DIR / "raw" / "SAND" / "task1" / "sand_task_1.xlsx"
+
+AUDIO_TASKS = [
+    "phonationA", "phonationE", "phonationI", "phonationO", "phonationU",
+    "rhythmKA", "rhythmPA", "rhythmTA"
+]
+
 OUTPUT_CSV = DATA_DIR / "raw" / "sand_dataset.csv"
 
+
 def main():
+    print("[INFO] Loading metadata…")
+    df = pd.read_excel(METADATA_XLSX)
+
     rows = []
 
-    # Loop through label folders
-    for label_dir in RAW_DIR.iterdir():
-        if not label_dir.is_dir():
-            continue
+    for _, row in df.iterrows():
+        subject_id = row["ID"]     # e.g., ID000
+        age = row["Age"]
+        sex = row["Sex"]
+        cls = row["Class"]         # 1–5
 
-        label = label_dir.name  # e.g., "phonationE"
+        subject_dir = RAW_TASK1_DIR
 
-        # Loop through WAV files inside each label folder
-        for wav in label_dir.glob("*.wav"):
-            relative_path = wav.relative_to(DATA_DIR / "raw")
-            rows.append([str(relative_path), label])
+        for task in AUDIO_TASKS:
+            wav_path = subject_dir / task / f"{subject_id}_{task}.wav"
 
-    # Write CSV
+            if wav_path.exists():
+                relative = wav_path.relative_to(DATA_DIR / "raw")
+                rows.append([
+                    str(relative),
+                    subject_id,
+                    age,
+                    sex,
+                    cls
+                ])
+            else:
+                print(f"[WARN] Missing: {wav_path}")
+
+    print(f"[INFO] Writing {len(rows)} rows → {OUTPUT_CSV}")
+
     with open(OUTPUT_CSV, "w", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["filepath", "label"])
+        writer.writerow(["filepath", "ID", "Age", "Sex", "Class"])
         writer.writerows(rows)
 
-    print(f"[OK] Wrote {len(rows)} entries to {OUTPUT_CSV}")
+    print("[DONE] CSV generated successfully.")
+
 
 if __name__ == "__main__":
     main()
