@@ -13,8 +13,7 @@ from cmpt491_als.config import (
     get_training_config,
 )
 
-app = typer.Typer()
-
+app = typer.Typer(no_args_is_help=True)
 
 def load_model(num_labels: int = 5):
     """
