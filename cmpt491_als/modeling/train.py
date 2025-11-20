@@ -30,9 +30,9 @@ app = typer.Typer()
 # -------------------------------------------------------------------------
 def spec_augment_batch(
     x: torch.Tensor,
-    time_mask_param: int = 40,
-    freq_mask_param: int = 15,
-    num_masks: int = 2,
+    time_mask_param: int = 20,
+    freq_mask_param: int = 8,
+    num_masks: int = 1,
 ) -> torch.Tensor:
     """
     Simple in-batch SpecAugment on mel spectrograms.
@@ -236,7 +236,7 @@ def freeze_backbone_layers(
 @app.command()
 def fit(
     platform: str = typer.Option("auto", help="Hardware preset (unused, for future)."),
-    use_specaugment: bool = typer.Option(False, help="Apply SpecAugment."),
+    use_specaugment: bool = typer.Option(True, help="Apply SpecAugment."),
     use_mixup: bool = typer.Option(True, help="Apply Mixup."),
     mixup_alpha: float = typer.Option(0.0, help="Beta alpha for Mixup."),
     label_smoothing: float = typer.Option(0.05, help="Label smoothing for hard labels."),
@@ -268,7 +268,7 @@ def fit(
     # ---------------------------------------------------------------------
     # Config
     # ---------------------------------------------------------------------
-    cfg = get_training_config(platform)
+    cfg = get_training_config(platform) 
     num_epochs = cfg["num_epochs"]
     batch_size = cfg["batch_size"]
     lr = cfg["learning_rate"]

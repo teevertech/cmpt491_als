@@ -34,19 +34,19 @@ AUDIO_CONFIG = {
 TRAINING_CONFIG_M2_MACBOOK = {
     "batch_size": 2,                # Small batch for M2 memory constraints
     "num_epochs": 10,
-    "learning_rate": 1e-5,
+    "learning_rate": 6e-4,
     "num_workers": 2,               # Lower for macOS stability
     "gradient_accumulation_steps": 4, # Simulate larger batch
     "max_length_override": 5.0,     # Shorter audio for memory
 }
 
 TRAINING_CONFIG_A100 = {
-    "batch_size": 48,               # Large batch for A100 power
+    "batch_size": 64,               # Large batch for A100 power
     "num_epochs": 120,
-    "warmup_ratio": 0.1,
+    "warmup_ratio": 0.15,
     "weight_decay": 0.01,
-    "learning_rate": 3e-4,          # Slightly higher LR for larger batches
-    "num_workers": 8,               # High throughput
+    "learning_rate": 5e-4,          # Slightly higher LR for larger batches
+    "num_workers": 10,               # High throughput
     "gradient_accumulation_steps": 1, # No need to accumulate
     "max_length_override": 10.0,    # Full length audio
     "specaugment": True,            # Use SpecAugment for regularization
