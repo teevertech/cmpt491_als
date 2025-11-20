@@ -42,7 +42,7 @@ TRAINING_CONFIG_M2_MACBOOK = {
 
 TRAINING_CONFIG_A100 = {
     "batch_size": 32,               # Large batch for A100 power
-    "num_epochs": 40,
+    "num_epochs": 80,
     "warmup_ratio": 0.1,
     "weight_decay": 0.01,
     "learning_rate": 5e-4,          # Slightly higher LR for larger batches
