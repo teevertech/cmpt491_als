@@ -13,6 +13,7 @@ from cmpt491_als.config import (
     MODELS_DIR,
     PROCESSED_DATA_DIR,
     INTERIM_DATA_DIR,
+    RAW_DATA_DIR,
     get_training_config,
     MODEL_NAMES
 )
@@ -150,9 +151,12 @@ def train(
     logger.info(f"Config: {config}")
 
     # Get paths
-    train_data_dir = PROCESSED_DATA_DIR / "SAND" / "task1" / "train"
-    val_data_dir = PROCESSED_DATA_DIR / "SAND" / "task1" / "val"
-    metadata_path = INTERIM_DATA_DIR / "sand_dataset.csv"
+    audio_root = RAW_DATA_DIR               # e.g. data/raw
+
+    # Use stratified splits created by build_interim_csv.py
+    train_metadata_path = INTERIM_DATA_DIR / "train.csv"
+    val_metadata_path = INTERIM_DATA_DIR / "val.csv"
+
     model_output_dir = MODELS_DIR / model_name
     model_output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -215,16 +219,17 @@ def train(
         return
 
     # Create datasets
+    # Create datasets
     try:
         train_dataset = SANDDataset(
-            data_dir=train_data_dir,
-            metadata_csv=metadata_path,
+            audio_root=audio_root,
+            metadata_csv=train_metadata_path,
             feature_extractor=feature_extractor
         )
 
         val_dataset = SANDDataset(
-            data_dir=val_data_dir,
-            metadata_csv=metadata_path,
+            audio_root=audio_root,
+            metadata_csv=val_metadata_path,
             feature_extractor=feature_extractor
         )
 

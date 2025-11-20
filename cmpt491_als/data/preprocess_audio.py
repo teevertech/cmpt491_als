@@ -1,48 +1,54 @@
-import librosa
-import soundfile as sf
+import torchaudio
 from pathlib import Path
 
-RAW_DIR = Path(__file__).resolve().parent / "raw"           # data/raw
-PROC_DIR = Path(__file__).resolve().parent / "processed"     # data/processed
-
-TARGET_SR = 16000   # ElasticAST recommended sample rate
+DATA_DIR = Path(__file__).resolve().parent
+RAW_DIR = DATA_DIR / "raw" / "audio"
+PROC_DIR = DATA_DIR / "processed"
+TARGET_SR = 16000
 
 def process_audio(input_path: Path, output_path: Path):
-    """Load audio, resample, normalize, and save."""
     try:
-        audio, sr = librosa.load(input_path, sr=TARGET_SR)
+        # Load audio
+        waveform, sr = torchaudio.load(str(input_path))
 
-        # Normalize audio peak to ±1
-        if audio.size > 0:
-            audio = audio / max(1e-9, abs(audio).max())
+        # Convert to mono
+        if waveform.shape[0] > 1:
+            waveform = waveform.mean(dim=0, keepdim=True)
 
+        # Resample if needed
+        if sr != TARGET_SR:
+            resampler = torchaudio.transforms.Resample(orig_freq=sr, new_freq=TARGET_SR)
+            waveform = resampler(waveform)
+
+        # Peak normalize
+        peak = waveform.abs().max().item()
+        if peak > 0:
+            waveform = waveform / peak
+
+        # Ensure output folder exists
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        sf.write(output_path, audio, TARGET_SR)
+
+        # Save WAV
+        torchaudio.save(str(output_path), waveform, TARGET_SR)
 
     except Exception as e:
-        print(f"[ERROR] Failed to process {input_path}: {e}")
+        print(f"[ERROR] Failed processing {input_path}: {e}")
 
 
 def main():
     print("[Audio Preprocessing] Starting...")
 
-    audio_root = RAW_DIR / "audio"
-    if not audio_root.exists():
-        raise FileNotFoundError(f"Missing RAW audio directory: {audio_root}")
-
-    # Recursively process all wav files
-    wav_files = list(audio_root.rglob("*.wav"))
-    print(f"[INFO] Found {len(wav_files)} WAV files.")
+    wav_files = list(RAW_DIR.rglob("*.wav"))
+    print(f"[INFO] Found {len(wav_files)} audio files.")
 
     for wav in wav_files:
-        relative = wav.relative_to(audio_root)
-        out_path = PROC_DIR / relative
-        out_path = out_path.with_suffix(".wav")
+        rel = wav.relative_to(RAW_DIR)
+        out_path = PROC_DIR / rel
 
         print(f"[PROCESS] {wav} → {out_path}")
         process_audio(wav, out_path)
 
-    print(f"[DONE] Processed audio written to: {PROC_DIR}")
+    print("[DONE] Processed audio saved to:", PROC_DIR)
 
 
 if __name__ == "__main__":
