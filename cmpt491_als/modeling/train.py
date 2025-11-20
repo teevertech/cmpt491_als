@@ -8,7 +8,6 @@ from loguru import logger
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from sklearn.metrics import accuracy_score, f1_score
-from torch.optim.lr_scheduler import CosineAnnealingLR
 import typer
 
 from cmpt491_als.modeling.sand_datasets import SANDDataset
@@ -73,40 +72,72 @@ def compute_class_weights(train_csv: Path, num_classes: int = 5) -> torch.Tensor
 
 
 # --------------------------------------------------------------
-# TRAINING COMMAND
+# Warmup + Cosine scheduler
+# --------------------------------------------------------------
+def build_warmup_cosine_scheduler(optimizer, warmup_steps, total_steps, min_lr):
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return float(step) / float(max(1, warmup_steps))
+
+        progress = float(step - warmup_steps) / float(max(1, total_steps - warmup_steps))
+        cosine_decay = 0.5 * (1 + np.cos(np.pi * progress))
+
+        return max(min_lr, cosine_decay)
+
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+
+
+# --------------------------------------------------------------
+# FIT COMMAND
 # --------------------------------------------------------------
 @app.command()
 def fit(
-    platform: str = typer.Option("auto"),
-    use_specaugment: bool = typer.Option(True),
+    platform: str = typer.Option(
+        "auto", help="Hardware preset: auto, a100, m2, etc."
+    ),
+    use_specaugment: bool = typer.Option(
+        True, help="Apply SpecAugment during training."
+    ),
 ):
+    """
+    Train ElasticAST on the SAND dataset with warmup+cosine LR, SpecAugment,
+    class-weighted loss, and lazy encoder initialization.
+    """
 
     logger.info("========== TRAINING START ==========")
 
-    # Device
+    # Device ------------------------------------------------------
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Device: {device}, cuda.available={torch.cuda.is_available()}")
+    logger.info(f"Device: {device}, cuda.is_available={torch.cuda.is_available()}")
 
-    # Config
+    # Config ------------------------------------------------------
     cfg = get_training_config(platform)
     num_epochs = cfg["num_epochs"]
     batch_size = cfg["batch_size"]
     lr = cfg["learning_rate"]
     num_workers = cfg["num_workers"]
 
-    logger.info(f"Config: {cfg}")
+    logger.info(f"Training config: {cfg}")
 
-    # Class weights
+    # Class weights ----------------------------------------------
     train_csv = INTERIM_DATA_DIR / "train.csv"
     class_weights = compute_class_weights(train_csv, num_classes=5).to(device)
     loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
-    # Model
+    # Model -------------------------------------------------------
     model = ElasticASTForAudioClassification(num_labels=5).to(device)
 
-    # Datasets / loaders
-    train_dataset = SANDDataset(RAW_DATA_DIR, train_csv)
-    val_dataset = SANDDataset(RAW_DATA_DIR, INTERIM_DATA_DIR / "val.csv")
+    # Datasets ----------------------------------------------------
+    train_dataset = SANDDataset(
+        audio_root=RAW_DATA_DIR,
+        metadata_csv=train_csv,
+    )
+
+    val_csv = INTERIM_DATA_DIR / "val.csv"
+    val_dataset = SANDDataset(
+        audio_root=RAW_DATA_DIR,
+        metadata_csv=val_csv,
+    )
 
     train_loader = DataLoader(
         train_dataset,
@@ -128,39 +159,41 @@ def fit(
 
     logger.info(f"Loaded dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
-    # Lazy-init encoder
+    # Lazy init ElasticAST encoder --------------------------------
     init_batch = next(iter(train_loader))
     with torch.no_grad():
         x_init = init_batch["input_values"].to(device)
         _ = model(x_init)
+    logger.info("ElasticAST encoder initialized from first batch.")
 
-    logger.info("ElasticAST encoder initialized.")
-
-    # Optimizer & scaler
+    # Optimizer ---------------------------------------------------
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scaler = GradScaler() if device.type == "cuda" else None
 
-    # Cosine LR scheduler (epoch-level)
-    scheduler = CosineAnnealingLR(
-        optimizer,
-        T_max=num_epochs,
-        eta_min=lr / 10.0,  # final LR is 1/10th of initial
+    # Scheduler: warmup + cosine ---------------------------------
+    total_steps = num_epochs * len(train_loader)
+    warmup_steps = int(0.1 * total_steps)
+    min_lr = lr / 20
+
+    scheduler = build_warmup_cosine_scheduler(
+        optimizer, warmup_steps, total_steps, min_lr
     )
 
-    best_val_f1 = 0.0
-
+    # Output dir --------------------------------------------------
     model_dir = MODELS_DIR / "elasticast_sand"
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # --------------------------------------------------------------
-    # TRAINING LOOP
-    # --------------------------------------------------------------
-    for epoch in range(1, num_epochs + 1):
-        logger.info(f"===== EPOCH {epoch}/{num_epochs} =====")
+    best_val_f1 = 0.0
 
-        # -----------------------
+    # =================================================================
+    # TRAINING LOOP
+    # =================================================================
+    for epoch in range(1, num_epochs + 1):
+        logger.info(f"----- EPOCH {epoch}/{num_epochs} -----")
+
+        # ----------------------------
         # TRAIN
-        # -----------------------
+        # ----------------------------
         model.train()
         train_losses = []
 
@@ -177,30 +210,28 @@ def fit(
                 with autocast():
                     outputs = model(x)
                     logits = outputs.logits
-
-                # ALWAYS compute loss in FP32
-                loss = loss_fn(logits.float(), y)
+                    loss = loss_fn(logits.float(), y)
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
-
             else:
                 outputs = model(x)
                 logits = outputs.logits
-                loss = loss_fn(logits.float(), y)
-
+                loss = loss_fn(logits, y)
                 loss.backward()
                 optimizer.step()
+
+            scheduler.step()  # per-batch LR update
 
             train_losses.append(loss.item())
 
         avg_train_loss = float(np.mean(train_losses))
         logger.info(f"[Train] Loss: {avg_train_loss:.4f}")
 
-        # -----------------------
-        # VALIDATION
-        # -----------------------
+        # ----------------------------
+        # VALIDATE
+        # ----------------------------
         model.eval()
         val_losses = []
         val_preds = []
@@ -211,14 +242,11 @@ def fit(
                 x = batch["input_values"].to(device)
                 y = batch["labels"].to(device)
 
-                with autocast():
-                    outputs = model(x)
-                    logits = outputs.logits
-
-                loss = loss_fn(logits.float(), y)
+                outputs = model(x)
+                logits = outputs.logits
+                loss = loss_fn(logits, y)
 
                 val_losses.append(loss.item())
-
                 preds = logits.argmax(dim=-1).cpu().numpy()
                 val_preds.extend(preds)
                 val_targets.extend(y.cpu().numpy())
@@ -227,22 +255,16 @@ def fit(
         val_acc = accuracy_score(val_targets, val_preds)
         val_f1 = f1_score(val_targets, val_preds, average="weighted")
 
-        # Step LR scheduler (once per epoch)
-        scheduler.step()
-        current_lr = scheduler.get_last_lr()[0]
-
         logger.info(
-            f"[Val] Loss={avg_val_loss:.4f}, "
-            f"Acc={val_acc:.4f}, "
-            f"F1={val_f1:.4f}, "
-            f"LR={current_lr:.6e}"
+            f"[Val] Loss: {avg_val_loss:.4f}, "
+            f"Acc: {val_acc:.4f}, F1(weighted): {val_f1:.4f}"
         )
 
-        # Save checkpoint
+        # Save best model --------------------------------------------------------------------------------
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
-            ckpt = model_dir / "best_model.pt"
-            torch.save(model.state_dict(), ckpt)
-            logger.info(f"✔ Saved new BEST model (F1={val_f1:.4f}) → {ckpt}")
+            save_path = model_dir / "best_model.pt"
+            torch.save(model.state_dict(), save_path)
+            logger.info(f"✔ Saved BEST model (F1={val_f1:.4f}) → {save_path}")
 
     logger.info("========== TRAINING COMPLETE ==========")

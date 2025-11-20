@@ -33,7 +33,7 @@ AUDIO_CONFIG = {
 
 TRAINING_CONFIG_M2_MACBOOK = {
     "batch_size": 2,                # Small batch for M2 memory constraints
-    "num_epochs": 40,
+    "num_epochs": 10,
     "learning_rate": 1e-5,
     "num_workers": 2,               # Lower for macOS stability
     "gradient_accumulation_steps": 4, # Simulate larger batch
@@ -42,7 +42,7 @@ TRAINING_CONFIG_M2_MACBOOK = {
 
 TRAINING_CONFIG_A100 = {
     "batch_size": 32,               # Large batch for A100 power
-    "num_epochs": 40,
+    "num_epochs": 10,
     "learning_rate": 3e-5,          # Slightly higher LR for larger batches
     "num_workers": 8,               # High throughput
     "gradient_accumulation_steps": 1, # No need to accumulate
