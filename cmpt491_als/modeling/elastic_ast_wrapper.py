@@ -5,50 +5,64 @@ import sys
 from pathlib import Path
 
 # Path to ElasticAST repo:
-# cmpt491-als/
+# project_root/
+#   cmpt491_als/
 #   ElasticAST/
 #     src/
 ELASTIC_ROOT = Path(__file__).resolve().parents[2] / "ElasticAST"
 sys.path.insert(0, str(ELASTIC_ROOT / "src"))
 
-# Import the actual ElasticAST model
 from models.elasticast import ElasticAST
 
 
 class ElasticASTForAudioClassification(nn.Module):
     """
-    Wraps ElasticAST (raw waveform encoder) so it behaves like a HuggingFace classifier.
+    Wraps ElasticAST so it behaves like a HuggingFace-style classifier.
     """
 
     def __init__(self, num_labels: int):
         super().__init__()
 
-        # Instantiate ElasticAST encoder
-        self.encoder = ElasticAST()
+        # 🔧 CONFIG: these are reasonable defaults based on the AST/ElasticAST paper
+        # and code (10s audio, 128 mel bins, ViT-B/16-ish config).
+        #
+        # You can tweak these later, but this will get you past the constructor error.
+        sample_size = (128, 1000)   # (frequency_bins, time_frames)
+        patch_size = 16
+        dim        = 768            # embedding dimension
+        depth      = 12             # number of transformer blocks
+        heads      = 12             # attention heads
 
-        # ElasticAST exposes embedding dim as .embed_dim
-        self.hidden_dim = self.encoder.embed_dim
+        self.model = ElasticAST(
+            sample_size=sample_size,
+            patch_size=patch_size,
+            num_classes=num_labels,
+            dim=dim,
+            depth=depth,
+            heads=heads,
+            channels=1,              # audio spectrogram is usually single-channel
+            dropout=0.0,
+            emb_dropout=0.0,
+            token_dropout_prob=None,
+            imagenet_pretrain=False,
+            SSAST_pretrain=False,
+            AST_pretrain=False,
+            avg_pool_tk=False,
+            random_token_dropout=0,
+            eval_token_dropout=0,
+        )
 
-        # Classification head
-        self.classifier = nn.Linear(self.hidden_dim, num_labels)
-
-        # Loss function
         self.loss_fn = nn.CrossEntropyLoss()
 
     def forward(self, input_values, labels=None):
         """
         Args:
-            input_values: (batch, waveform_length)
+            input_values: model input batch
+        Returns:
+            SequenceClassifierOutput(logits=..., loss=optional)
         """
-
-        # Encoder output: (batch, seq_len, embed_dim)
-        features = self.encoder(input_values)
-
-        # Mean pool over time dimension
-        pooled = features.mean(dim=1)  # -> (batch, embed_dim)
-
-        # Classification logits
-        logits = self.classifier(pooled)
+        # ElasticAST's forward returns logits (batch, num_classes)
+        logits = self.model(input_values)
 
         loss = None
         if labels is not None:
@@ -56,5 +70,5 @@ class ElasticASTForAudioClassification(nn.Module):
 
         return SequenceClassifierOutput(
             logits=logits,
-            loss=loss
+            loss=loss,
         )
