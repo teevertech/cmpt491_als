@@ -1,7 +1,7 @@
 import torch
 
 PATCH_SIZE = 16
-FIXED_T = 1024    # <<< IMPORTANT: must match training length!
+FIXED_T = 2048    # <<< IMPORTANT: must match training length!
 
 
 def pad_mels(batch):
