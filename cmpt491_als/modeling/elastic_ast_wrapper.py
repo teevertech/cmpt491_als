@@ -77,6 +77,8 @@ class ElasticASTForAudioClassification(nn.Module):
         # Lazy initialization on first forward pass
         if self.encoder is None:
             self._build_encoder(sample_height=F, sample_width=T)
+            # move encoder to same device as inputs
+            self.encoder.to(x.device)
 
         # (B, 1, F, T) for ElasticAST
         x = x.unsqueeze(1)
