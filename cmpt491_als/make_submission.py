@@ -1,6 +1,13 @@
+"""
+Generate the final submission CSV for SAND Task 1.
+
+Usage:
+    python -m cmpt491_als.modeling.make_submission
+"""
+
+from pathlib import Path
 import pandas as pd
 import torch
-from torch.utils.data import DataLoader
 from loguru import logger
 
 from cmpt491_als.modeling.sand_datasets import SANDDataset
@@ -8,89 +15,115 @@ from cmpt491_als.modeling.elastic_ast_wrapper import ElasticASTForAudioClassific
 from cmpt491_als.modeling.collate import pad_mels
 from cmpt491_als.config import RAW_DATA_DIR, MODELS_DIR
 
+from torch.utils.data import DataLoader
 
-def make_submission(test_xlsx: str, output_csv: str = "results.csv"):
+
+# ---------------------------------------------------------------------
+# LOAD TEST DATA FROM XLSX AND BUILD DATASET
+# ---------------------------------------------------------------------
+def load_test_metadata(xlsx_path: Path) -> pd.DataFrame:
     """
-    Generate SAND challenge submission file.
-    Output format:
-        ID,CLASS
-        ID001,4
-        ID002,1
-        ...
+    Reads the test XLSX provided by the competition and returns
+    a DataFrame containing ID and filepath columns.
     """
+    df = pd.read_excel(xlsx_path)
 
-    logger.info("===== LOADING TEST XLSX =====")
-    df = pd.read_excel(test_xlsx)
+    if "ID" not in df.columns or "filepath" not in df.columns:
+        raise ValueError(
+            f"Test XLSX must contain ID and filepath columns; got: {df.columns.tolist()}"
+        )
 
-    required_cols = {"filepath", "ID"}
-    if not required_cols.issubset(df.columns):
-        raise ValueError(f"Test XLSX must contain columns: {required_cols}")
+    logger.info(f"Loaded test metadata: {len(df)} samples")
+    return df
 
-    # Convert to temp CSV because SANDDataset expects CSV input
-    temp_csv = "temp_test.csv"
+
+# ---------------------------------------------------------------------
+# PREDICT FUNCTION
+# ---------------------------------------------------------------------
+def predict(model, dataloader, device):
+    model.eval()
+    preds = []
+
+    with torch.no_grad():
+        for batch in dataloader:
+            x = batch["input_values"].to(device)
+            outputs = model(x)
+            logits = outputs.logits.float()
+            cls = logits.argmax(dim=-1).cpu().numpy()  # 0–4
+            preds.extend(cls)
+
+    return preds
+
+
+# ---------------------------------------------------------------------
+# MAIN SUBMISSION FUNCTION
+# ---------------------------------------------------------------------
+def make_submission(test_xlsx: str, output_csv: str):
+    test_xlsx = Path(test_xlsx)
+
+    df = load_test_metadata(test_xlsx)
+
+    # Build a temporary CSV so SANDDataset can load it
+    temp_csv = test_xlsx.parent / "temp_test.csv"
     df.to_csv(temp_csv, index=False)
 
-    logger.info("===== BUILDING TEST DATASET =====")
-    test_ds = SANDDataset(
+    # Build dataset (labels ignored)
+    test_dataset = SANDDataset(
         audio_root=RAW_DATA_DIR,
-        metadata_csv=temp_csv,
-        is_test=True,     # <-- IMPORTANT: disable label loading
+        metadata_csv=temp_csv
     )
 
     test_loader = DataLoader(
-        test_ds,
+        test_dataset,
         batch_size=16,
         shuffle=False,
-        num_workers=4,
-        pin_memory=True,
-        collate_fn=pad_mels,
+        num_workers=2,
+        collate_fn=pad_mels
     )
 
-    logger.info("===== LOADING TRAINED MODEL =====")
+    # Load model
+    model_path = MODELS_DIR / "elasticast_sand" / "best_model.pt"
+    if not model_path.exists():
+        raise FileNotFoundError(
+            f"Could not find trained model at: {model_path}"
+        )
+
+    logger.info(f"Loading model from {model_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    model = ElasticASTForAudioClassification(num_labels=5).to(device)
-    ckpt_path = MODELS_DIR / "elasticast_sand" / "best_model.pt"
+    model = ElasticASTForAudioClassification(num_labels=5)
+    model.load_state_dict(torch.load(model_path, map_location=device))
+    model.to(device)
 
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
-    model.eval()
+    # Predict
+    logger.info("Running inference...")
+    preds = predict(model, test_loader, device)
 
-    logger.info(f"Loaded: {ckpt_path}")
+    # Convert from 0–4 → 1–5
+    preds = [p + 1 for p in preds]
 
-    # Inference
-    all_ids = []
-    all_preds = []
-
-    logger.info("===== RUNNING INFERENCE =====")
-    with torch.no_grad():
-        for batch in test_loader:
-            x = batch["input_values"].to(device)
-            ids = batch["ids"]
-
-            outputs = model(x)
-            logits = outputs.logits.float()
-
-            preds = logits.argmax(dim=-1).cpu().tolist()  # 0–4
-
-            all_ids.extend(ids)
-            all_preds.extend(preds)
-
-    # Convert predictions back to CLASS 1–5
-    class_labels = [p + 1 for p in all_preds]
-
-    # Build submission DataFrame
-    submission = pd.DataFrame({
-        "ID": all_ids,
-        "CLASS": class_labels
+    # Build final submission dataframe
+    sub = pd.DataFrame({
+        "ID": df["ID"].values,
+        "CLASS": preds
     })
 
-    # Ensure exactly the required column order
-    submission = submission[["ID", "CLASS"]]
+    # Save
+    out_path = Path(output_csv)
+    sub.to_csv(out_path, index=False)
 
-    submission.to_csv(output_csv, index=False)
+    logger.info(f"Submission file saved to {out_path}")
+    logger.info("Done!")
 
-    logger.info(f"===== SUBMISSION SAVED → {output_csv} =====")
 
-
+# ---------------------------------------------------------------------
+# ENTRYPOINT
+# ---------------------------------------------------------------------
 if __name__ == "__main__":
-    make_submission("sand_task_1_test.xlsx", "results.csv")
+    # ABSOLUTE PATH TO YOUR XLSX
+    TEST_XLSX = "/workspace/cmpt491_als/cmpt491_als/data/raw/sand_task_1_test.xlsx"
+
+    # OUTPUT NAME
+    OUTPUT_CSV = "results.csv"
+
+    make_submission(TEST_XLSX, OUTPUT_CSV)
