@@ -210,6 +210,7 @@ def fit(
                 with autocast():
                     outputs = model(x)
                     logits = outputs.logits
+                
                 loss = loss_fn(logits.float(), y)
 
                 scaler.scale(loss).backward()
