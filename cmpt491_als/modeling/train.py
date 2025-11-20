@@ -25,7 +25,7 @@ app = typer.Typer()
 
 
 # --------------------------------------------------------------
-# SpecAugment (simple, in-batch)
+# SpecAugment
 # --------------------------------------------------------------
 def spec_augment_batch(
     x: torch.Tensor,
@@ -33,11 +33,7 @@ def spec_augment_batch(
     freq_mask_param: int = 15,
     num_masks: int = 2,
 ) -> torch.Tensor:
-    """
-    Apply simple SpecAugment to a batch of mel spectrograms.
 
-    x: (B, T, F) tensor
-    """
     x = x.clone()
     B, T, F = x.shape
 
@@ -47,33 +43,28 @@ def spec_augment_batch(
             t = random.randint(0, time_mask_param)
             if t > 0 and T - t > 0:
                 t0 = random.randint(0, T - t)
-                x[b, t0:t0 + t, :] = 0.0
+                x[b, t0:t0+t, :] = 0.0
 
             # Freq mask
             f = random.randint(0, freq_mask_param)
             if f > 0 and F - f > 0:
                 f0 = random.randint(0, F - f)
-                x[b, :, f0:f0 + f] = 0.0
+                x[b, :, f0:f0+f] = 0.0
 
     return x
 
 
 # --------------------------------------------------------------
-# Class weights from train.csv
+# Class weights
 # --------------------------------------------------------------
 def compute_class_weights(train_csv: Path, num_classes: int = 5) -> torch.Tensor:
-    """
-    Compute inverse-frequency class weights from train.csv.
-    Assumes labels in CSV are 1..5; dataset subtracts 1 → 0..4.
-    """
     df = pd.read_csv(train_csv)
     raw_labels = df["label"].values
-    labels = raw_labels - 1  # match SANDDataset behavior
+    labels = raw_labels - 1
 
     counts = np.bincount(labels, minlength=num_classes)
     total = counts.sum()
 
-    # Inverse-frequency normalized weights
     weights = total / (num_classes * counts)
     logger.info(f"Class counts: {counts}, class weights: {weights}")
 
@@ -81,57 +72,40 @@ def compute_class_weights(train_csv: Path, num_classes: int = 5) -> torch.Tensor
 
 
 # --------------------------------------------------------------
-# FIT COMMAND
+# TRAINING COMMAND
 # --------------------------------------------------------------
 @app.command()
 def fit(
-    platform: str = typer.Option(
-        "auto",
-        help="Hardware preset: auto, a100, m2, etc.",
-    ),
-    use_specaugment: bool = typer.Option(
-        True,
-        help="Apply SpecAugment during training.",
-    ),
+    platform: str = typer.Option("auto"),
+    use_specaugment: bool = typer.Option(True),
 ):
-    """
-    Train ElasticAST on the SAND dataset with class-weighted loss and SpecAugment.
-    """
 
     logger.info("========== TRAINING START ==========")
 
-    # Device ------------------------------------------------------
+    # Device
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    logger.info(f"Device: {device}, cuda.is_available={torch.cuda.is_available()}")
+    logger.info(f"Device: {device}, cuda.available={torch.cuda.is_available()}")
 
-    # Config ------------------------------------------------------
+    # Config
     cfg = get_training_config(platform)
     num_epochs = cfg["num_epochs"]
     batch_size = cfg["batch_size"]
     lr = cfg["learning_rate"]
     num_workers = cfg["num_workers"]
 
-    logger.info(f"Training config: {cfg}")
+    logger.info(f"Config: {cfg}")
 
-    # Class weights ----------------------------------------------
+    # Class weights
     train_csv = INTERIM_DATA_DIR / "train.csv"
     class_weights = compute_class_weights(train_csv, num_classes=5).to(device)
     loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
-    # Model -------------------------------------------------------
+    # Model
     model = ElasticASTForAudioClassification(num_labels=5).to(device)
 
-    # Dataloaders -------------------------------------------------
-    train_dataset = SANDDataset(
-        audio_root=RAW_DATA_DIR,
-        metadata_csv=train_csv,
-    )
-
-    val_csv = INTERIM_DATA_DIR / "val.csv"
-    val_dataset = SANDDataset(
-        audio_root=RAW_DATA_DIR,
-        metadata_csv=val_csv,
-    )
+    # Datasets / loaders
+    train_dataset = SANDDataset(RAW_DATA_DIR, train_csv)
+    val_dataset = SANDDataset(RAW_DATA_DIR, INTERIM_DATA_DIR / "val.csv")
 
     train_loader = DataLoader(
         train_dataset,
@@ -153,31 +127,32 @@ def fit(
 
     logger.info(f"Loaded dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
-    # Lazy init ElasticAST encoder with real batch ----------------
+    # Lazy-init encoder
     init_batch = next(iter(train_loader))
     with torch.no_grad():
         x_init = init_batch["input_values"].to(device)
         _ = model(x_init)
-    logger.info("ElasticAST encoder initialized from first train batch.")
 
-    # Optimizer / scaler -----------------------------------------
+    logger.info("ElasticAST encoder initialized.")
+
+    # Optimizer & scaler
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scaler = GradScaler() if device.type == "cuda" else None
+
+    best_val_f1 = 0.0
 
     model_dir = MODELS_DIR / "elasticast_sand"
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    best_val_f1 = 0.0
-
-    # -------------------------------------------------------------
+    # --------------------------------------------------------------
     # TRAINING LOOP
-    # -------------------------------------------------------------
+    # --------------------------------------------------------------
     for epoch in range(1, num_epochs + 1):
-        logger.info(f"----- EPOCH {epoch}/{num_epochs} -----")
+        logger.info(f"===== EPOCH {epoch}/{num_epochs} =====")
 
-        # -------------------
+        # -----------------------
         # TRAIN
-        # -------------------
+        # -----------------------
         model.train()
         train_losses = []
 
@@ -195,15 +170,18 @@ def fit(
                     outputs = model(x)
                     logits = outputs.logits
 
-                loss = loss_fn(logits, y)
+                # ALWAYS compute loss in FP32
+                loss = loss_fn(logits.float(), y)
 
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
+
             else:
                 outputs = model(x)
                 logits = outputs.logits
-                loss = loss_fn(logits, y)
+                loss = loss_fn(logits.float(), y)
+
                 loss.backward()
                 optimizer.step()
 
@@ -212,9 +190,9 @@ def fit(
         avg_train_loss = float(np.mean(train_losses))
         logger.info(f"[Train] Loss: {avg_train_loss:.4f}")
 
-        # -------------------
-        # VALIDATE
-        # -------------------
+        # -----------------------
+        # VALIDATION
+        # -----------------------
         model.eval()
         val_losses = []
         val_preds = []
@@ -225,11 +203,16 @@ def fit(
                 x = batch["input_values"].to(device)
                 y = batch["labels"].to(device)
 
-                outputs = model(x)
-                logits = outputs.logits
-                loss = loss_fn(logits, y)
+                # Run forward pass with AMP
+                with autocast():
+                    outputs = model(x)
+                    logits = outputs.logits
+
+                # Compute loss ALWAYS in FP32
+                loss = loss_fn(logits.float(), y)
 
                 val_losses.append(loss.item())
+
                 preds = logits.argmax(dim=-1).cpu().numpy()
                 val_preds.extend(preds)
                 val_targets.extend(y.cpu().numpy())
@@ -239,15 +222,16 @@ def fit(
         val_f1 = f1_score(val_targets, val_preds, average="weighted")
 
         logger.info(
-            f"[Val] Loss: {avg_val_loss:.4f}, "
-            f"Acc: {val_acc:.4f}, F1 (weighted): {val_f1:.4f}"
+            f"[Val] Loss={avg_val_loss:.4f}, "
+            f"Acc={val_acc:.4f}, "
+            f"F1={val_f1:.4f}"
         )
 
-        # Save best by F1 -----------------------------------------
+        # Save checkpoint
         if val_f1 > best_val_f1:
             best_val_f1 = val_f1
-            save_path = model_dir / "best_model.pt"
-            torch.save(model.state_dict(), save_path)
-            logger.info(f"✔ Saved new BEST model (F1={val_f1:.4f}) → {save_path}")
+            ckpt = model_dir / "best_model.pt"
+            torch.save(model.state_dict(), ckpt)
+            logger.info(f"✔ Saved new BEST model (F1={val_f1:.4f}) → {ckpt}")
 
     logger.info("========== TRAINING COMPLETE ==========")
