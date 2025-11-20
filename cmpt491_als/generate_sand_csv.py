@@ -17,7 +17,7 @@ def main():
 
         # Loop through WAV files inside each label folder
         for wav in label_dir.glob("*.wav"):
-            relative_path = wav.relative_to(DATA_DIR)
+            relative_path = wav.relative_to(DATA_DIR / "raw")
             rows.append([str(relative_path), label])
 
     # Write CSV
