@@ -9,7 +9,7 @@ INTERIM_DIR = DATA_DIR / "interim"
 INTERIM_DIR.mkdir(parents=True, exist_ok=True)
 
 def normalize_path(p: str):
-    """ Convert Windows paths or relative paths → POSIX project paths """
+    """Convert Windows or relative paths to POSIX paths."""
     p = p.replace("\\", "/")
     return p
 
@@ -18,20 +18,28 @@ def main():
         raise FileNotFoundError(f"Missing raw CSV: {RAW_CSV}")
 
     df = pd.read_csv(RAW_CSV)
-    if "filepath" not in df or "label" not in df:
-        raise ValueError("CSV must have columns: filepath,label")
+
+    # Required columns
+    required_cols = {"filepath", "label"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"CSV missing required columns: {missing}")
 
     # Normalize paths
     df["filepath"] = df["filepath"].apply(normalize_path)
 
-    # Write cleaned interim CSV
+    # Save full cleaned CSV (including ID, Age, Sex, Class)
     interim_csv = INTERIM_DIR / "sand_dataset.csv"
     df.to_csv(interim_csv, index=False)
     print(f"[OK] Wrote cleaned interim CSV → {interim_csv}")
 
-    # Build train/val/test splits
-    train_df, test_df = train_test_split(df, test_size=0.10, stratify=df["label"], random_state=42)
-    train_df, val_df = train_test_split(train_df, test_size=0.10, stratify=train_df["label"], random_state=42)
+    # Split based only on label (metadata is kept)
+    train_df, test_df = train_test_split(
+        df, test_size=0.10, stratify=df["label"], random_state=42
+    )
+    train_df, val_df = train_test_split(
+        train_df, test_size=0.10, stratify=train_df["label"], random_state=42
+    )
 
     train_df.to_csv(INTERIM_DIR / "train.csv", index=False)
     val_df.to_csv(INTERIM_DIR / "val.csv", index=False)
