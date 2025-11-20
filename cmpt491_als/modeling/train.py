@@ -78,6 +78,10 @@ def create_dataloaders(
 
 @app.command("fit")
 def fit_command(
+    model_name: str = typer.Option(
+        "elastic-audio/elastic-ast-large",
+        help="HF model"
+    ),
     platform: str = typer.Option(
         "auto",
         help="Hardware preset: auto, a100, m2, etc.",
