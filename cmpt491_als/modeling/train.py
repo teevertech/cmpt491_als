@@ -172,7 +172,7 @@ def fit(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
 
     total_steps = num_epochs * len(train_loader)
-    warmup_steps = int(warmup_frac * total_steps)
+    warmup_steps = int(warmup_ratio * total_steps)
 
     # Linear warmup → Cosine decay
     scheduler = torch.optim.lr_scheduler.SequentialLR(
