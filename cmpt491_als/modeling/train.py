@@ -236,11 +236,11 @@ def freeze_backbone_layers(
 @app.command()
 def fit(
     platform: str = typer.Option("auto", help="Hardware preset (unused, for future)."),
-    use_specaugment: bool = typer.Option(True, help="Apply SpecAugment."),
+    use_specaugment: bool = typer.Option(False, help="Apply SpecAugment."),
     use_mixup: bool = typer.Option(True, help="Apply Mixup."),
-    mixup_alpha: float = typer.Option(0.4, help="Beta alpha for Mixup."),
+    mixup_alpha: float = typer.Option(0.0, help="Beta alpha for Mixup."),
     label_smoothing: float = typer.Option(0.05, help="Label smoothing for hard labels."),
-    freeze_blocks: int = typer.Option(4, help="Number of ElasticAST backbone blocks to freeze."),
+    freeze_blocks: int = typer.Option(0, help="Number of ElasticAST backbone blocks to freeze."),
 ):
     """
     Train ElasticAST on the SAND dataset with:
