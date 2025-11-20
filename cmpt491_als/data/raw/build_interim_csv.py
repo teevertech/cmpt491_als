@@ -4,8 +4,8 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 DATA_DIR = Path(__file__).resolve().parent
-RAW_CSV = DATA_DIR / "raw" / "sand_dataset.csv"        # demographics
-AUDIO_CSV = DATA_DIR / "raw" / "sand_audio_map.csv"    # filepath + label
+RAW_CSV = DATA_DIR / "sand_dataset.csv"        # demographics
+AUDIO_CSV = DATA_DIR / "sand_audio_map.csv"    # filepath + label
 
 INTERIM_DIR = DATA_DIR / "interim"
 INTERIM_DIR.mkdir(parents=True, exist_ok=True)
