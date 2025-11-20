@@ -8,6 +8,7 @@ from loguru import logger
 from torch.utils.data import DataLoader
 from torch.cuda.amp import autocast, GradScaler
 from sklearn.metrics import accuracy_score, f1_score
+from torch.optim.lr_scheduler import CosineAnnealingLR
 import typer
 
 from cmpt491_als.modeling.sand_datasets import SANDDataset
@@ -43,13 +44,13 @@ def spec_augment_batch(
             t = random.randint(0, time_mask_param)
             if t > 0 and T - t > 0:
                 t0 = random.randint(0, T - t)
-                x[b, t0:t0+t, :] = 0.0
+                x[b, t0:t0 + t, :] = 0.0
 
             # Freq mask
             f = random.randint(0, freq_mask_param)
             if f > 0 and F - f > 0:
                 f0 = random.randint(0, F - f)
-                x[b, :, f0:f0+f] = 0.0
+                x[b, :, f0:f0 + f] = 0.0
 
     return x
 
@@ -139,6 +140,13 @@ def fit(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scaler = GradScaler() if device.type == "cuda" else None
 
+    # Cosine LR scheduler (epoch-level)
+    scheduler = CosineAnnealingLR(
+        optimizer,
+        T_max=num_epochs,
+        eta_min=lr / 10.0,  # final LR is 1/10th of initial
+    )
+
     best_val_f1 = 0.0
 
     model_dir = MODELS_DIR / "elasticast_sand"
@@ -203,12 +211,10 @@ def fit(
                 x = batch["input_values"].to(device)
                 y = batch["labels"].to(device)
 
-                # Run forward pass with AMP
                 with autocast():
                     outputs = model(x)
                     logits = outputs.logits
 
-                # Compute loss ALWAYS in FP32
                 loss = loss_fn(logits.float(), y)
 
                 val_losses.append(loss.item())
@@ -221,10 +227,15 @@ def fit(
         val_acc = accuracy_score(val_targets, val_preds)
         val_f1 = f1_score(val_targets, val_preds, average="weighted")
 
+        # Step LR scheduler (once per epoch)
+        scheduler.step()
+        current_lr = scheduler.get_last_lr()[0]
+
         logger.info(
             f"[Val] Loss={avg_val_loss:.4f}, "
             f"Acc={val_acc:.4f}, "
-            f"F1={val_f1:.4f}"
+            f"F1={val_f1:.4f}, "
+            f"LR={current_lr:.6e}"
         )
 
         # Save checkpoint
