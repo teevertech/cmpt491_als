@@ -162,32 +162,59 @@ def train(
     # Load model with memory optimization
     logger.info(f"Loading pretrained model: {pretrained_model_name}")
     try:
-        feature_extractor = ASTFeatureExtractor.from_pretrained(pretrained_model_name)
-        logger.info("Feature extractor loaded successfully")
 
-        # Define proper class names
-        class_names = ['ALS-1', 'ALS-2', 'ALS-3', 'ALS-4', 'Healthy']
-        id2label = {i: name for i, name in enumerate(class_names)}
-        label2id = {name: i for i, name in enumerate(class_names)}
+        # ------------------------------------------------------------------
+        # 🆕 ELASTIC AST BRANCH
+        # ------------------------------------------------------------------
+        if model_name == "elastic_ast":
+            logger.info("Loading ElasticAST model (local PyTorch module).")
 
-        model = ASTForAudioClassification.from_pretrained(
-            pretrained_model_name,
-            num_labels=5,
-            ignore_mismatched_sizes=True,
-            torch_dtype=torch.float32,  # Explicit dtype for stability
-            id2label=id2label,
-            label2id=label2id
-        )
-        logger.info("Model loaded successfully with proper class names")
+            # 1. Import local wrapper (you will create elastic_ast_wrapper.py)
+            from cmpt491_als.modeling.elastic_ast_wrapper import ElasticASTForAudioClassification
 
-        # Memory optimization for M2
-        if platform == "m2" or device == "mps":
-            # Enable memory efficient attention if available
-            if hasattr(model.config, 'use_memory_efficient_attention'):
-                model.config.use_memory_efficient_attention = True
+            # 2. Define class labels
+            class_names = ['ALS-1', 'ALS-2', 'ALS-3', 'ALS-4', 'Healthy']
+            num_labels = len(class_names)
+            id2label = {i: name for i, name in enumerate(class_names)}
+            label2id = {name: i for i, name in enumerate(class_names)}
 
-        model = model.to(device)
-        logger.info(f"Model moved to {device}")
+            # 3. Initialize ElasticAST model
+            model = ElasticASTForAudioClassification(num_labels=num_labels).to(device)
+
+            # 4. ElasticAST does not use HuggingFace feature extractors
+            feature_extractor = None
+
+            logger.info("ElasticAST loaded successfully.")
+
+        # ------------------------------------------------------------------
+        # EXISTING AST (HuggingFace) MODEL BRANCH
+        # ------------------------------------------------------------------
+        else:
+            feature_extractor = ASTFeatureExtractor.from_pretrained(pretrained_model_name)
+            logger.info("Feature extractor loaded successfully")
+
+            # Define proper class names
+            class_names = ['ALS-1', 'ALS-2', 'ALS-3', 'ALS-4', 'Healthy']
+            id2label = {i: name for i, name in enumerate(class_names)}
+            label2id = {name: i for i, name in enumerate(class_names)}
+
+            model = ASTForAudioClassification.from_pretrained(
+                pretrained_model_name,
+                num_labels=5,
+                ignore_mismatched_sizes=True,
+                torch_dtype=torch.float32,  # Explicit dtype for stability
+                id2label=id2label,
+                label2id=label2id
+            )
+            logger.info("Model loaded successfully with proper class names")
+
+            # Memory optimization for M2
+            if platform == "m2" or device == "mps":
+                if hasattr(model.config, 'use_memory_efficient_attention'):
+                    model.config.use_memory_efficient_attention = True
+
+            model = model.to(device)
+            logger.info(f"Model moved to {device}")
 
     except Exception as e:
         logger.error(f"Error loading model: {e}")

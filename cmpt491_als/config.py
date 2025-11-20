@@ -55,6 +55,7 @@ TRAINING_CONFIG = TRAINING_CONFIG_M2_MACBOOK
 # Model Names - for easy model switching
 MODEL_NAMES = {
     "ast": "MIT/ast-finetuned-audioset-10-10-0.4593",
+    "elastic_ast": "local/ElasticAST",
 }
 
 

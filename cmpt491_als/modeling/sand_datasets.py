@@ -90,16 +90,19 @@ class SANDDataset(Dataset):
         # Convert to numpy for AST feature extractor
         waveform_np = waveform.squeeze().numpy()
 
-        # Use AST feature extractor to create input features
-        if self.feature_extractor:
+        # Use AST feature extractor (HuggingFace AST)
+        if self.feature_extractor is not None:
             inputs = self.feature_extractor(
                 waveform_np,
                 sampling_rate=16000,
                 return_tensors="pt"
             )
-            audio_features = inputs['input_values'].squeeze()
+            audio_features = inputs['input_values'].squeeze(0)
+
+        # ElasticAST: return raw waveform (1D)
         else:
-            audio_features = waveform
+            # waveform is loaded as a torch tensor, may be (1, T)
+            audio_features = waveform.squeeze()
 
         # Build the return data structure
         data_sample = {
