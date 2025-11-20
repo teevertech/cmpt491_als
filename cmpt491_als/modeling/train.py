@@ -194,7 +194,9 @@ def fit(
                 with autocast():
                     outputs = model(x)
                     logits = outputs.logits
-                    loss = loss_fn(logits, y)
+
+                loss = loss_fn(logits, y)
+
                 scaler.scale(loss).backward()
                 scaler.step(optimizer)
                 scaler.update()
