@@ -272,7 +272,7 @@ def fit(
     num_epochs = cfg["num_epochs"]
     batch_size = cfg["batch_size"]
     lr = cfg["learning_rate"]
-    warmup_frac = cfg["warmup_frac"]
+    warmup_ratio = cfg["warmup_ratio"]
     num_workers = cfg["num_workers"]
 
     logger.info(f"Training config: {cfg}")
@@ -339,7 +339,7 @@ def fit(
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
 
     total_steps = num_epochs * len(train_loader)
-    warmup_steps = int(warmup_frac * total_steps)
+    warmup_steps = int(warmup_ratio * total_steps)
     warmup_steps = max(warmup_steps, 1)  # avoid zero
 
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
