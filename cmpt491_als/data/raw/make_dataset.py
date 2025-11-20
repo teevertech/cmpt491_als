@@ -8,7 +8,8 @@ def main():
     subprocess.run(["python", str(SCRIPT_DIR / "build_interim_csv.py")], check=True)
 
     print("===== [2/2] Preprocessing RAW audio → PROCESSED =====")
-    subprocess.run(["python", str(SCRIPT_DIR / "preprocess_audio.py")], check=True)
+    PREPROCESS_SCRIPT = SCRIPT_DIR.parent / "preprocess_audio.py"
+    subprocess.run(["python", str(PREPROCESS_SCRIPT)], check=True)
 
     print("===== Dataset pipeline COMPLETE =====")
 
