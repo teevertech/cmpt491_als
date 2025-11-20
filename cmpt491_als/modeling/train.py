@@ -156,47 +156,74 @@ def fit_command(
     # ==============================================================
     # TRAINING LOOP
     # ==============================================================
-    best_val_loss = float("inf")
+    from torch.cuda.amp import autocast, GradScaler
+    from sklearn.metrics import accuracy_score, f1_score
+
+    scaler = GradScaler() if device.type == "cuda" else None
+
+    # Scheduler (cosine decay with warmup)
+    warmup_steps = 100
+    total_steps = len(train_loader) * num_epochs
+
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer,
+        T_max=total_steps - warmup_steps,
+    )
+
+    best_val_f1 = 0.0
+    global_step = 0
+
+    logger.info("========== BEGIN TRAINING ==========")
 
     for epoch in range(1, num_epochs + 1):
-        logger.info(f"----- EPOCH {epoch}/{num_epochs} -----")
 
-        # -----------------------
-        # TRAIN
-        # -----------------------
         model.train()
-        total_train_loss = 0
+        train_losses = []
 
         for batch in train_loader:
-            optimizer.zero_grad()
 
             x = batch["input_values"].to(device)
             y = batch["labels"].to(device)
 
-            with torch.cuda.amp.autocast(enabled=(scaler is not None)):
+            # 1. Forward pass with AMP
+            with autocast(enabled=(scaler is not None)):
                 outputs = model(x, labels=y)
-                loss = outputs.loss
+                loss = outputs.loss / cfg["gradient_accumulation_steps"]
 
+            # 2. Backward
             if scaler:
                 scaler.scale(loss).backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                scaler.step(optimizer)
-                scaler.update()
             else:
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
-                optimizer.step()
 
-            total_train_loss += loss.item()
+            # 3. Step optimizer every N steps (accumulation)
+            if (global_step + 1) % cfg["gradient_accumulation_steps"] == 0:
+                if scaler:
+                    scaler.step(optimizer)
+                    scaler.update()
+                else:
+                    optimizer.step()
 
-        avg_train_loss = total_train_loss / len(train_loader)
-        logger.info(f"[Train] Loss: {avg_train_loss:.4f}")
+                optimizer.zero_grad()
 
-        # -----------------------
-        # VALIDATE
-        # -----------------------
+                # LR warmup then cosine decay
+                if global_step < warmup_steps:
+                    lr_scale = float(global_step) / float(max(1, warmup_steps))
+                    for pg in optimizer.param_groups:
+                        pg["lr"] = lr * lr_scale
+                else:
+                    scheduler.step()
+
+            train_losses.append(loss.item())
+            global_step += 1
+
+        # ------------------------------------------
+        # VALIDATION
+        # ------------------------------------------
         model.eval()
-        total_val_loss = 0
+        val_losses = []
+        val_preds = []
+        val_targets = []
 
         with torch.no_grad():
             for batch in val_loader:
@@ -204,19 +231,26 @@ def fit_command(
                 y = batch["labels"].to(device)
 
                 outputs = model(x, labels=y)
-                loss = outputs.loss
-                total_val_loss += loss.item()
+                val_losses.append(outputs.loss.item())
 
-        avg_val_loss = total_val_loss / len(val_loader)
-        logger.info(f"[Val] Loss: {avg_val_loss:.4f}")
+                preds = outputs.logits.argmax(dim=-1).cpu().numpy()
+                val_preds.extend(preds)
+                val_targets.extend(y.cpu().numpy())
 
-        # -----------------------
+        val_loss = sum(val_losses) / len(val_losses)
+        val_acc = accuracy_score(val_targets, val_preds)
+        val_f1 = f1_score(val_targets, val_preds, average="weighted")
+
+        logger.info(f"[Epoch {epoch}] Train Loss: {sum(train_losses)/len(train_losses):.4f}")
+        logger.info(f"[Epoch {epoch}] Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}")
+
+        # ------------------------------------------
         # SAVE BEST MODEL
-        # -----------------------
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
+        # ------------------------------------------
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
             save_path = model_dir / "best_model.pt"
             torch.save(model.state_dict(), save_path)
-            logger.info(f"Saved best model → {save_path}")
+            logger.info(f"✔ Saved new BEST model (F1={val_f1:.4f}) → {save_path}")
 
     logger.info("========== TRAINING COMPLETE ==========")
