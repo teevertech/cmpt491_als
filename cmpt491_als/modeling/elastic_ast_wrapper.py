@@ -37,7 +37,15 @@ class ElasticASTForAudioClassification(nn.Module):
         self.heads = heads
 
         # Model is created lazily because sample_width depends on input
-        self.encoder = None
+        self.encoder = ElasticAST(
+        sample_size=(self.n_mels, max_time_frames),
+        patch_size=self.patch_size,
+        num_classes=self.num_labels,
+        dim=self.dim,
+        depth=self.depth,
+        heads=self.heads,
+        channels=1
+        )
 
         self.loss_fn = nn.CrossEntropyLoss()
 
