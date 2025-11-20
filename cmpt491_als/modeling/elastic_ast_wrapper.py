@@ -11,7 +11,7 @@ from transformers.modeling_outputs import SequenceClassifierOutput
 #   Expecting: /workspace/ElasticAST/src/models/elasticast.py
 #   Adjust ELASTIC_ROOT if your layout is different.
 # ---------------------------------------------------------------------
-ELASTIC_ROOT = Path(__file__).resolve().parents[2] / "ElasticAST"
+ELASTIC_ROOT = Path(__file__).resolve().parents[3] / "ElasticAST"
 sys.path.insert(0, str(ELASTIC_ROOT / "src"))
 
 from models.elasticast import ElasticAST  # type: ignore
