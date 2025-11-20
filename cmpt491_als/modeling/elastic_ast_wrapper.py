@@ -14,7 +14,7 @@ from models.elasticast import ElasticAST  # type: ignore
 class ElasticASTForAudioClassification(nn.Module):
     """
     Wrapper for the GitHub ElasticAST model.
-    Automatically infers sample_size from the input (mel-spec),
+    Automatically infers sample_size from the input (mel-spec)
     and constructs the inner ElasticAST on first forward().
     """
 
@@ -36,16 +36,8 @@ class ElasticASTForAudioClassification(nn.Module):
         self.depth = depth
         self.heads = heads
 
-        # Model is created lazily because sample_width depends on input
-        self.encoder = ElasticAST(
-        sample_size=(self.n_mels, max_time_frames),
-        patch_size=self.patch_size,
-        num_classes=self.num_labels,
-        dim=self.dim,
-        depth=self.depth,
-        heads=self.heads,
-        channels=1
-        )
+        # Will be constructed on first forward()
+        self.encoder = None
 
         self.loss_fn = nn.CrossEntropyLoss()
 
@@ -77,16 +69,16 @@ class ElasticASTForAudioClassification(nn.Module):
         input_values: (B, T, F) where F = mel bins (should equal n_mels)
         """
 
-        # Standardize orientation: (B, F, T)
+        # Standard orientation: (B, F, T)
         x = input_values.transpose(1, 2)  # (B, F, T)
 
         B, F, T = x.shape
 
-        # Lazy init ElasticAST using real sample size
+        # Lazy initialization on first forward pass
         if self.encoder is None:
             self._build_encoder(sample_height=F, sample_width=T)
 
-        # Prepare for ElasticAST: (B, 1, F, T)
+        # (B, 1, F, T) for ElasticAST
         x = x.unsqueeze(1)
 
         logits = self.encoder(x)
