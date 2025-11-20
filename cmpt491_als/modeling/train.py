@@ -6,7 +6,6 @@ import pandas as pd
 import torch
 from loguru import logger
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
 from sklearn.metrics import accuracy_score, f1_score
 import typer
 
@@ -33,7 +32,10 @@ def spec_augment_batch(
     freq_mask_param: int = 15,
     num_masks: int = 2,
 ) -> torch.Tensor:
-
+    """
+    Simple SpecAugment on a batch of mel spectrograms.
+    x: (B, T, F)
+    """
     x = x.clone()
     B, T, F = x.shape
 
@@ -58,6 +60,10 @@ def spec_augment_batch(
 # Class weights
 # --------------------------------------------------------------
 def compute_class_weights(train_csv: Path, num_classes: int = 5) -> torch.Tensor:
+    """
+    Compute inverse-frequency class weights from train.csv.
+    Assumes labels in CSV are 1..5; dataset subtracts 1 → 0..4.
+    """
     df = pd.read_csv(train_csv)
     raw_labels = df["label"].values
     labels = raw_labels - 1
@@ -100,8 +106,12 @@ def fit(
     ),
 ):
     """
-    Train ElasticAST on the SAND dataset with warmup+cosine LR, SpecAugment,
-    class-weighted loss, and lazy encoder initialization.
+    Train ElasticAST on the SAND dataset with:
+      - warmup+cosine LR
+      - SpecAugment
+      - class-weighted loss
+      - lazy encoder initialization
+    All in *pure FP32* to avoid AMP dtype issues.
     """
 
     logger.info("========== TRAINING START ==========")
@@ -121,8 +131,7 @@ def fit(
 
     # Class weights ----------------------------------------------
     train_csv = INTERIM_DATA_DIR / "train.csv"
-    class_weights = compute_class_weights(train_csv, num_classes=5).to(device)
-    class_weights = class_weights.float()
+    class_weights = compute_class_weights(train_csv, num_classes=5).to(device).float()
     loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
     # Model -------------------------------------------------------
@@ -169,7 +178,6 @@ def fit(
 
     # Optimizer ---------------------------------------------------
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
-    scaler = GradScaler() if device.type == "cuda" else None
 
     # Scheduler: warmup + cosine ---------------------------------
     total_steps = num_epochs * len(train_loader)
@@ -187,7 +195,7 @@ def fit(
     best_val_f1 = 0.0
 
     # =================================================================
-    # TRAINING LOOP
+    # TRAINING LOOP (PURE FP32)
     # =================================================================
     for epoch in range(1, num_epochs + 1):
         logger.info(f"----- EPOCH {epoch}/{num_epochs} -----")
@@ -207,11 +215,11 @@ def fit(
 
             optimizer.zero_grad()
 
-            # ----- PURE FP32 TRAINING -----
+            # forward in FP32 (logits forced to float32)
             outputs = model(x)
-            logits = outputs.logits      # float32
-            loss = loss_fn(logits, y)    # weights also float32
+            logits = outputs.logits.to(torch.float32)
 
+            loss = loss_fn(logits, y)
             loss.backward()
             optimizer.step()
             scheduler.step()
@@ -229,14 +237,13 @@ def fit(
         val_preds = []
         val_targets = []
 
-        model.eval()
         with torch.no_grad():
             for batch in val_loader:
                 x = batch["input_values"].to(device)
                 y = batch["labels"].to(device).long()
 
                 outputs = model(x)
-                logits = outputs.logits
+                logits = outputs.logits.to(torch.float32)
                 loss = loss_fn(logits, y)
 
                 val_losses.append(loss.item())
