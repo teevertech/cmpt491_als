@@ -75,7 +75,7 @@ def mixup_batch(
     y: torch.Tensor,
     num_classes: int,
     alpha: float = 0.1,
-    label_smoothing: float = 0.0,
+    label_smoothing: float = 0.02,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Mixup on inputs + labels.
@@ -243,7 +243,7 @@ def freeze_backbone_layers(
 @app.command()
 def fit(
     platform: str = typer.Option("auto", help="Hardware preset (unused, for future)."),
-    use_specaugment: bool = typer.Option(True, help="Apply SpecAugment."),
+    use_specaugment: bool = typer.Option(False, help="Apply SpecAugment."),
     use_mixup: bool = typer.Option(True, help="Apply Mixup."),
     mixup_alpha: float = typer.Option(0.1, help="Beta alpha for Mixup."),
     label_smoothing: float = typer.Option(0.0, help="Label smoothing for hard labels."),

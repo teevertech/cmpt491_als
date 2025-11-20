@@ -41,12 +41,12 @@ TRAINING_CONFIG_M2_MACBOOK = {
 }
 
 TRAINING_CONFIG_A100 = {
-    "batch_size": 64,               # Large batch for A100 power
-    "num_epochs": 120,
-    "warmup_ratio": 0.15,
+    "batch_size": 48,               # Large batch for A100 power
+    "num_epochs": 150,
+    "warmup_ratio": 0.05,
     "weight_decay": 0.01,
     "learning_rate": 5e-4,          # Slightly higher LR for larger batches
-    "num_workers": 10,               # High throughput
+    "num_workers": 6,               # High throughput
     "gradient_accumulation_steps": 1, # No need to accumulate
     "max_length_override": 10.0,    # Full length audio
     "specaugment": True,            # Use SpecAugment for regularization
