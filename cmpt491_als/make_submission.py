@@ -121,7 +121,7 @@ def make_submission(test_xlsx: str, output_csv: str):
 # ---------------------------------------------------------------------
 if __name__ == "__main__":
     # ABSOLUTE PATH TO YOUR XLSX
-    TEST_XLSX = "/workspace/cmpt491_als/cmpt491_als/data/raw/sand_task_1_test.xlsx"
+    TEST_XLSX = "/workspace/cmpt491_als/cmpt491_als/data/raw/sand_task1_test.xlsx"
 
     # OUTPUT NAME
     OUTPUT_CSV = "results.csv"
