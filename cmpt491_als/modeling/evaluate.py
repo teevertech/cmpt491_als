@@ -17,13 +17,26 @@ from cmpt491_als.config import RAW_DATA_DIR, INTERIM_DATA_DIR, MODELS_DIR
 app = typer.Typer()
 
 
-def load_model(path: str, num_labels: int = 5, device="cuda"):
-    model = ElasticASTForAudioClassification(num_labels=num_labels)
+def load_model(path: str, num_labels: int = 5, device="cuda", init_batch=None):
+    """
+    Loads ElasticAST model and forces encoder initialization before loading weights.
+    """
+    model = ElasticASTForAudioClassification(num_labels=num_labels).to(device)
+    model.eval()
+
+    # ---- FORCE encoder initialization using real sample shape ----
+    if init_batch is None:
+        raise ValueError("init_batch must be provided to initialize encoder.")
+
+    with torch.no_grad():
+        x = init_batch["input_values"].to(device)
+        _ = model(x)   # builds encoder with correct sample_size=(F,T)
+
+    # ---- Load weights now that encoder exists ----
     logger.info(f"Loading model weights from: {path}")
     sd = torch.load(path, map_location=device)
-    model.load_state_dict(sd)
-    model.to(device)
-    model.eval()
+    model.load_state_dict(sd, strict=True)
+
     return model
 
 
@@ -42,7 +55,15 @@ def evaluate_command(
 
     # Load checkpoint
     ckpt_path = MODELS_DIR / checkpoint_name
-    model = load_model(str(ckpt_path), device=device)
+    # Force encoder init using first test batch
+    init_batch = next(iter(test_loader))
+
+    model = load_model(
+        str(ckpt_path),
+        num_labels=5,
+        device=device,
+        init_batch=init_batch,
+    )
 
     # Load test dataset
     test_csv = INTERIM_DATA_DIR / "test.csv"
