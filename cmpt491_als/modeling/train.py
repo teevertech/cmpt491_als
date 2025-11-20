@@ -100,13 +100,33 @@ def fit_command(
     logger.info(f"Training config: {cfg}")
 
     # Model --------------------------------------------------------
-    model = load_model(num_labels=5).to(device)
+    model = load_model(model_name, num_labels=5).to(device)
 
-    # Dataloaders --------------------------------------------------
+    # ==============================================================
+    # Create dataloaders BEFORE optimizer
+    # ==============================================================
+
     train_loader, val_loader = create_dataloaders(
+        feature_extractor=feature_extractor,
         batch_size=batch_size,
         num_workers=num_workers,
     )
+
+    # ==============================================================
+    # FORCE-LAZY-INIT OF ELASTICAST USING FIRST REAL BATCH
+    # ==============================================================
+
+    init_batch = next(iter(train_loader))
+
+    with torch.no_grad():
+        x = init_batch["input_values"].to(device)
+        _ = model(x)  # triggers _build_encoder(sample_size=(F,T)) correctly
+
+    logger.info("ElasticAST encoder initialized from real batch.")
+
+    # ==============================================================
+    # Now encoder exists — create optimizer
+    # ==============================================================
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
     scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
