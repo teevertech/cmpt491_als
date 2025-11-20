@@ -48,13 +48,13 @@ def spec_augment_batch(
             t = random.randint(0, time_mask_param)
             if t > 0 and T - t > 0:
                 t0 = random.randint(0, T - t)
-                x[b, t0 : t0 + t, :] = 0.0
+                x[b, t0:t0 + t, :] = 0.0
 
             # Freq mask
             f = random.randint(0, freq_mask_param)
             if f > 0 and F - f > 0:
                 f0 = random.randint(0, F - f)
-                x[b, :, f0 : f0 + f] = 0.0
+                x[b, :, f0:f0 + f] = 0.0
 
     return x
 
@@ -63,7 +63,9 @@ def spec_augment_batch(
 # Mixup (with soft labels)
 # -------------------------------------------------------------------------
 def one_hot(
-    labels: torch.Tensor, num_classes: int, device: torch.device
+    labels: torch.Tensor,
+    num_classes: int,
+    device: torch.device,
 ) -> torch.Tensor:
     return F.one_hot(labels, num_classes=num_classes).float().to(device)
 
@@ -72,7 +74,7 @@ def mixup_batch(
     x: torch.Tensor,
     y: torch.Tensor,
     num_classes: int,
-    alpha: float = 0.4,
+    alpha: float = 0.1,
     label_smoothing: float = 0.0,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
@@ -80,12 +82,13 @@ def mixup_batch(
 
     x: (B, T, F)
     y: (B,) int64 labels (0..num_classes-1)
+
     Returns:
       mixed_x: (B, T, F)
       mixed_y: (B, C) soft labels
     """
     if alpha <= 0.0:
-        # just return smoothed one-hot labels
+        # Just return (optionally) smoothed one-hot labels
         y_oh = one_hot(y, num_classes, x.device)
         if label_smoothing > 0.0:
             y_oh = (1 - label_smoothing) * y_oh + label_smoothing / num_classes
@@ -127,7 +130,11 @@ class FocalLoss(torch.nn.Module):
         reduction: str = "mean",
     ):
         super().__init__()
-        self.register_buffer("alpha", alpha if alpha is not None else None)
+        # Store alpha as a buffer so it moves with the model
+        if alpha is not None:
+            self.register_buffer("alpha", alpha)
+        else:
+            self.alpha = None
         self.gamma = gamma
         self.reduction = reduction
 
@@ -138,17 +145,17 @@ class FocalLoss(torch.nn.Module):
           - (B,) int64
           - or (B, C) float (soft)
         """
-        # Always do loss in float32 for stability
+        # Compute loss in float32 for stability
         logits = logits.float()
         log_probs = F.log_softmax(logits, dim=-1)
         probs = log_probs.exp()
         B, C = logits.shape
 
         if target.dim() == 1:
-            # Hard labels → convert to one-hot
+            # Hard labels → one-hot
             target_oh = F.one_hot(target, num_classes=C).float()
         else:
-            target_oh = target  # already soft labels
+            target_oh = target  # soft labels
 
         # p_t = sum over classes of (p * y)
         pt = (probs * target_oh).sum(dim=-1).clamp(min=1e-7, max=1.0)
@@ -238,8 +245,8 @@ def fit(
     platform: str = typer.Option("auto", help="Hardware preset (unused, for future)."),
     use_specaugment: bool = typer.Option(True, help="Apply SpecAugment."),
     use_mixup: bool = typer.Option(True, help="Apply Mixup."),
-    mixup_alpha: float = typer.Option(0.0, help="Beta alpha for Mixup."),
-    label_smoothing: float = typer.Option(0.05, help="Label smoothing for hard labels."),
+    mixup_alpha: float = typer.Option(0.1, help="Beta alpha for Mixup."),
+    label_smoothing: float = typer.Option(0.0, help="Label smoothing for hard labels."),
     freeze_blocks: int = typer.Option(0, help="Number of ElasticAST backbone blocks to freeze."),
 ):
     """
@@ -247,7 +254,7 @@ def fit(
 
     - Class-weighted focal loss
     - SpecAugment
-    - Mixup
+    - Mixup (soft labels)
     - Cosine LR with warmup
     - Gradient clipping
     - Optional backbone freezing
@@ -268,7 +275,7 @@ def fit(
     # ---------------------------------------------------------------------
     # Config
     # ---------------------------------------------------------------------
-    cfg = get_training_config(platform) 
+    cfg = get_training_config(platform)
     num_epochs = cfg["num_epochs"]
     batch_size = cfg["batch_size"]
     lr = cfg["learning_rate"]
@@ -317,7 +324,7 @@ def fit(
     # ---------------------------------------------------------------------
     model = ElasticASTForAudioClassification(num_labels=5).to(device)
 
-    # Lazy-init encoder using first batch
+    # Lazy-init encoder using first batch (ElasticAST needs real shape)
     init_batch = next(iter(train_loader))
     with torch.no_grad():
         _ = model(init_batch["input_values"].to(device))
@@ -344,7 +351,7 @@ def fit(
 
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=1e-8,  # tiny start (cannot be 0)
+        start_factor=1e-8,  # tiny start (must be > 0)
         end_factor=1.0,
         total_iters=warmup_steps,
     )
@@ -393,28 +400,28 @@ def fit(
             # Mixup (produces soft labels)
             if use_mixup:
                 x, y_soft = mixup_batch(
-                    x, y,
+                    x,
+                    y,
                     num_classes=5,
                     alpha=mixup_alpha,
                     label_smoothing=label_smoothing,
                 )
             else:
-                # just smoothed one-hot if label_smoothing > 0
                 if label_smoothing > 0.0:
                     y_soft = one_hot(y, num_classes=5, device=device)
                     y_soft = (1 - label_smoothing) * y_soft + label_smoothing / 5
                 else:
-                    y_soft = None  # use hard labels
+                    y_soft = None
 
             optimizer.zero_grad()
 
             if scaler:
-                # AMP for forward pass ONLY
+                # AMP forward
                 with autocast():
                     outputs = model(x)
                     logits = outputs.logits  # may be fp16
 
-                # Compute loss in fp32 for stability
+                # Loss in fp32
                 if y_soft is not None:
                     loss = focal_loss(logits, y_soft)
                 else:
@@ -460,9 +467,9 @@ def fit(
                 y = batch["labels"].to(device)
 
                 outputs = model(x)
-                logits = outputs.logits.float()
+                logits = outputs.logits.float()  # ensure fp32 for metrics
 
-                # Use hard labels in validation (no mixup)
+                # Use hard labels in validation
                 val_loss = focal_loss(logits, y)
                 val_losses.append(val_loss.item())
 
