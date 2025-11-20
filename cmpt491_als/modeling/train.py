@@ -58,13 +58,11 @@ def create_dataloaders(
     train_dataset = SANDDataset(
         audio_root=RAW_DATA_DIR,
         metadata_csv=train_csv,
-        feature_extractor=feature_extractor,
     )
 
     val_dataset = SANDDataset(
         audio_root=RAW_DATA_DIR,
         metadata_csv=val_csv,
-        feature_extractor=feature_extractor,
     )
 
     logger.info(f"Loaded dataset: {len(train_dataset)} train, {len(val_dataset)} val")
