@@ -113,6 +113,11 @@ class SANDDataset(Dataset):
         wav = self._load_waveform(wav_path)
         log_mel = self._waveform_to_logmel(wav)
 
+        MAX_WIDTH = 1024   # ElasticAST-pretrained window
+
+        if log_mel.shape[0] > MAX_WIDTH:
+            log_mel = log_mel[:MAX_WIDTH, :]
+            
         raw_label = int(row["label"])
 
         # Convert from 1–5 → 0–4
