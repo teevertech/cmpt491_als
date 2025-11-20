@@ -1,49 +1,53 @@
 import torch.nn as nn
 from transformers.modeling_outputs import SequenceClassifierOutput
 
-# ElasticAST imports (repo must be cloned at project root /ElasticAST)
 import sys
 from pathlib import Path
 
+# Path to ElasticAST repo:
+# cmpt491-als/
+#   ElasticAST/
+#     src/
 ELASTIC_ROOT = Path(__file__).resolve().parents[2] / "ElasticAST"
-sys.path.insert(0, str(ELASTIC_ROOT / "modeling"))
+sys.path.insert(0, str(ELASTIC_ROOT / "src"))
 
-# Correct: ElasticAST encoder is named `ElasticAST`
-from network import ElasticAST
+# Import the actual ElasticAST model
+from models.elasticast import ElasticAST
 
 
 class ElasticASTForAudioClassification(nn.Module):
     """
-    Wraps ElasticAST so it behaves like HuggingFace ASTForAudioClassification.
+    Wraps ElasticAST (raw waveform encoder) so it behaves like a HuggingFace classifier.
     """
 
     def __init__(self, num_labels: int):
         super().__init__()
 
-        # Create ElasticAST encoder
+        # Instantiate ElasticAST encoder
         self.encoder = ElasticAST()
 
-        # Correct: embedding dimension stored here
+        # ElasticAST exposes embedding dim as .embed_dim
         self.hidden_dim = self.encoder.embed_dim
 
         # Classification head
         self.classifier = nn.Linear(self.hidden_dim, num_labels)
 
+        # Loss function
         self.loss_fn = nn.CrossEntropyLoss()
 
     def forward(self, input_values, labels=None):
         """
         Args:
             input_values: (batch, waveform_length)
-        Returns:
-            SequenceClassifierOutput(logits=..., loss=optional)
         """
-        # Encoder returns (batch, seq_len, hidden_dim)
+
+        # Encoder output: (batch, seq_len, embed_dim)
         features = self.encoder(input_values)
 
-        # Mean-pool over the patch dimension
-        pooled = features.mean(dim=1)
+        # Mean pool over time dimension
+        pooled = features.mean(dim=1)  # -> (batch, embed_dim)
 
+        # Classification logits
         logits = self.classifier(pooled)
 
         loss = None
