@@ -97,6 +97,9 @@ def fit_command(
 
     # Model --------------------------------------------------------
     model = load_model(num_labels=5).to(device)
+    with torch.no_grad():
+        dummy = torch.randn(1, 128, 128).to(device)  # (B, T, F) where F = n_mels = 128
+        model(dummy)
 
     # Dataloaders --------------------------------------------------
     train_loader, val_loader = create_dataloaders(
