@@ -4,38 +4,61 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 
 DATA_DIR = Path(__file__).resolve().parent
-RAW_CSV = DATA_DIR / "raw" / "sand_dataset.csv"
+RAW_CSV = DATA_DIR / "raw" / "sand_dataset.csv"        # demographics
+AUDIO_CSV = DATA_DIR / "raw" / "sand_audio_map.csv"    # filepath + label
+
 INTERIM_DIR = DATA_DIR / "interim"
 INTERIM_DIR.mkdir(parents=True, exist_ok=True)
 
+
 def normalize_path(p: str):
     """Convert Windows or relative paths to POSIX paths."""
-    p = p.replace("\\", "/")
-    return p
+    return p.replace("\\", "/")
+
 
 def main():
+    # ---- Load demographic CSV ----
     if not RAW_CSV.exists():
         raise FileNotFoundError(f"Missing raw CSV: {RAW_CSV}")
 
-    df = pd.read_csv(RAW_CSV)
+    meta_df = pd.read_csv(RAW_CSV)
+    required_meta = {"ID", "Age", "Sex", "Class"}
+    if not required_meta.issubset(meta_df.columns):
+        raise ValueError(f"Metadata CSV missing columns: {required_meta - set(meta_df.columns)}")
 
-    # Required columns
-    required_cols = {"filepath", "label"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        raise ValueError(f"CSV missing required columns: {missing}")
+    # ---- Load audio file CSV ----
+    if not AUDIO_CSV.exists():
+        raise FileNotFoundError(f"Missing AUDIO CSV: {AUDIO_CSV}")
+
+    audio_df = pd.read_csv(AUDIO_CSV)
+    required_audio = {"filepath", "label"}
+    if not required_audio.issubset(audio_df.columns):
+        raise ValueError(f"AUDIO CSV missing columns: {required_audio - set(audio_df.columns)}")
+
+    # Extract ID from filepath
+    audio_df["ID"] = audio_df["filepath"].apply(
+        lambda p: Path(p).stem.split("_")[0]  # e.g. ID024
+    )
 
     # Normalize paths
-    df["filepath"] = df["filepath"].apply(normalize_path)
+    audio_df["filepath"] = audio_df["filepath"].apply(normalize_path)
 
-    # Save full cleaned CSV (including ID, Age, Sex, Class)
+    # ---- Merge audio data with demographics ----
+    full_df = audio_df.merge(meta_df, on="ID", how="left")
+
+    missing_meta = full_df[full_df["Age"].isna()]
+    if len(missing_meta) > 0:
+        print("[WARN] Some audio IDs have no demographic info:")
+        print(missing_meta["ID"].unique())
+
+    # ---- Save full dataset ----
     interim_csv = INTERIM_DIR / "sand_dataset.csv"
-    df.to_csv(interim_csv, index=False)
+    full_df.to_csv(interim_csv, index=False)
     print(f"[OK] Wrote cleaned interim CSV → {interim_csv}")
 
-    # Split based only on label (metadata is kept)
+    # ---- Stratified splits ----
     train_df, test_df = train_test_split(
-        df, test_size=0.10, stratify=df["label"], random_state=42
+        full_df, test_size=0.10, stratify=full_df["label"], random_state=42
     )
     train_df, val_df = train_test_split(
         train_df, test_size=0.10, stratify=train_df["label"], random_state=42
@@ -46,6 +69,7 @@ def main():
     test_df.to_csv(INTERIM_DIR / "test.csv", index=False)
 
     print("[OK] Wrote: train.csv, val.csv, test.csv")
+
 
 if __name__ == "__main__":
     main()
