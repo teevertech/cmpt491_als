@@ -3,7 +3,7 @@ from pathlib import Path
 
 RAW_DIR = Path(__file__).resolve().parent
 XLSX_FILE = RAW_DIR / "sand_task_1.xlsx"
-AUDIO_DIR = RAW_DIR / "audio"     # change if your audio is in a different folder
+AUDIO_DIR = RAW_DIR / "audio"     # will search recursively
 
 OUTPUT_META = RAW_DIR / "sand_dataset.csv"
 OUTPUT_AUDIO = RAW_DIR / "sand_audio_map.csv"
@@ -28,14 +28,14 @@ def main():
     # ------------------------------
     # 2) Build sand_audio_map.csv
     # ------------------------------
-    print("[2] Scanning audio directory...")
+    print("[2] Scanning audio directory (recursive)...")
 
     rows = []
-    for wav in AUDIO_DIR.glob("*.wav"):
+    for wav in AUDIO_DIR.rglob("*.wav"):  # <—— recursive search!
         stem = wav.stem  # e.g. "ID059_phonationA"
         ID = stem.split("_")[0]  # "ID059"
 
-        # You want to use Class as the label
+        # Look up label from metadata
         class_row = df[df["ID"] == ID]
         if class_row.empty:
             print(f"[WARN] No metadata for audio file: {wav.name}")
@@ -43,8 +43,11 @@ def main():
 
         label = int(class_row["Class"].iloc[0])
 
+        # Convert full path → path relative to raw/
+        rel_path = wav.relative_to(RAW_DIR)
+
         rows.append({
-            "filepath": f"audio/{wav.name}",
+            "filepath": str(rel_path).replace("\\", "/"),
             "label": label
         })
 
