@@ -3,11 +3,14 @@ from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-DATA_DIR = Path(__file__).resolve().parent
-RAW_CSV = DATA_DIR / "sand_dataset.csv"        # demographics
-AUDIO_CSV = DATA_DIR / "sand_audio_map.csv"    # filepath + label
+# Current file: data/raw/build_interim_csv.py
+RAW_DIR = Path(__file__).resolve().parent        # data/raw
+DATA_DIR = RAW_DIR.parent                        # data/
+INTERIM_DIR = DATA_DIR / "interim"               # data/interim
 
-INTERIM_DIR = DATA_DIR / "interim"
+RAW_CSV = RAW_DIR / "sand_dataset.csv"
+AUDIO_CSV = RAW_DIR / "sand_audio_map.csv"
+
 INTERIM_DIR.mkdir(parents=True, exist_ok=True)
 
 
