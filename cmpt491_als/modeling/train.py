@@ -1,351 +1,195 @@
-from pathlib import Path
-from loguru import logger
-from tqdm import tqdm
 import typer
+from loguru import logger
 import torch
-import torch.nn as nn
-import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
-from transformers import ASTForAudioClassification, ASTFeatureExtractor
+from transformers import ASTFeatureExtractor
+
 from cmpt491_als.modeling.sand_datasets import SANDDataset
 from cmpt491_als.modeling.elastic_ast_wrapper import ElasticASTForAudioClassification
+
 from cmpt491_als.config import (
     MODELS_DIR,
-    PROCESSED_DATA_DIR,
-    INTERIM_DATA_DIR,
     RAW_DATA_DIR,
+    INTERIM_DATA_DIR,
     get_training_config,
-    MODEL_NAMES,
 )
 
 app = typer.Typer()
 
 
-def train_epoch(model, dataloader, optimizer, device, scaler=None, gradient_accumulation_steps=1):
-    """Train for one epoch with mixed precision and gradient accumulation."""
-    model.train()
-    total_loss = 0
-    correct = 0
-    total = 0
-    optimizer.zero_grad()
-
-    for batch_idx, batch in enumerate(tqdm(dataloader, desc="Training")):
-        # Move to device
-        input_values = batch['input_values'].to(device, non_blocking=True)
-        labels = batch['labels'].to(device, non_blocking=True)
-
-        # Mixed precision forward pass
-        if scaler is not None:  # CUDA with mixed precision
-            with autocast():
-                outputs = model(input_values=input_values, labels=labels)
-                loss = outputs.loss / gradient_accumulation_steps
-
-            # Mixed precision backward pass
-            scaler.scale(loss).backward()
-
-            # Gradient accumulation
-            if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                scaler.step(optimizer)
-                scaler.update()
-                optimizer.zero_grad()
-        else:  # Regular precision (MPS/CPU)
-            outputs = model(input_values=input_values, labels=labels)
-            loss = outputs.loss / gradient_accumulation_steps
-
-            loss.backward()
-
-            if (batch_idx + 1) % gradient_accumulation_steps == 0:
-                optimizer.step()
-                optimizer.zero_grad()
-
-        # Track metrics
-        total_loss += loss.item() * gradient_accumulation_steps
-        preds = torch.argmax(outputs.logits, dim=-1)
-        correct += (preds == labels).sum().item()
-        total += labels.size(0)
-
-    # Handle remaining gradients
-    if (batch_idx + 1) % gradient_accumulation_steps != 0:
-        if scaler is not None:
-            scaler.step(optimizer)
-            scaler.update()
-        else:
-            optimizer.step()
-        optimizer.zero_grad()
-
-    avg_loss = total_loss / len(dataloader)
-    accuracy = correct / total
-
-    return avg_loss, accuracy
+def load_feature_extractor(model_name: str):
+    """
+    Returns an ASTFeatureExtractor appropriate for the chosen model.
+    For ElasticAST, HuggingFace still uses ASTFeatureExtractor.
+    """
+    logger.info(f"Loading ASTFeatureExtractor for: {model_name}")
+    return ASTFeatureExtractor.from_pretrained(
+        model_name, trust_remote_code=True
+    )
 
 
-def validate_epoch(model, dataloader, device):
-    """Validate for one epoch."""
-    model.eval()
-    total_loss = 0
-    correct = 0
-    total = 0
-    all_preds = []
-    all_labels = []
-
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Validation"):
-            input_values = batch['input_values'].to(device)
-            labels = batch['labels'].to(device)
-
-            outputs = model(input_values=input_values, labels=labels)
-            loss = outputs.loss
-
-            total_loss += loss.item()
-            preds = torch.argmax(outputs.logits, dim=-1)
-            correct += (preds == labels).sum().item()
-            total += labels.size(0)
-
-            # Collect for F1 calculation
-            all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
-
-    avg_loss = total_loss / len(dataloader)
-    accuracy = correct / total
-
-    # Calculate F1-score (macro average for multi-class)
-    from sklearn.metrics import f1_score
-    f1 = f1_score(all_labels, all_preds, average='macro')
-
-    return avg_loss, accuracy, f1
+def load_model(model_name: str, num_labels: int = 5):
+    """
+    Loads the ElasticAST or AST model.
+    """
+    logger.info(f"Loading model: {model_name}")
+    return ElasticASTForAudioClassification(
+        model_name=model_name,
+        num_labels=num_labels
+    )
 
 
-@app.command()
-def train(
-    model_name: str = "ast",
-    platform: str = "auto",  # "m2", "a100", or "auto"
-    device: str = "auto",
-    num_epochs: int = None,   # Override from config if needed
-    batch_size: int = None,   # Override from config if needed
+def create_dataloaders(
+    feature_extractor,
+    batch_size: int,
+    num_workers: int,
 ):
-    """Fine-tune AST model with platform-optimized settings."""
+    """
+    Create dataset + dataloaders for train/val.
+    """
 
-    # Get platform-specific configuration
-    config = get_training_config(platform)
+    train_csv = INTERIM_DATA_DIR / "train.csv"
+    val_csv = INTERIM_DATA_DIR / "val.csv"
 
-    # Allow command-line overrides
-    if num_epochs is not None:
-        config = config.copy()
-        config["num_epochs"] = num_epochs
-    if batch_size is not None:
-        config = config.copy()
-        config["batch_size"] = batch_size
+    train_dataset = SANDDataset(
+        audio_root=RAW_DATA_DIR,
+        metadata_csv=train_csv,
+        feature_extractor=feature_extractor,
+    )
 
-    # Setup device
-    if device == "auto":
-        if torch.cuda.is_available():
-            device = "cuda"
-        elif torch.backends.mps.is_available():
-            device = "mps"
-            logger.warning("Using MPS - if crashes occur, try --platform m2")
-        else:
-            device = "cpu"
+    val_dataset = SANDDataset(
+        audio_root=RAW_DATA_DIR,
+        metadata_csv=val_csv,
+        feature_extractor=feature_extractor,
+    )
 
-    logger.info(f"Platform: {platform}")
-    logger.info(f"Device: {device}")
-    logger.info(f"Config: {config}")
-
-    # Get paths
-    audio_root = RAW_DATA_DIR               # e.g. data/raw
-
-    # Use stratified splits created by build_interim_csv.py
-    train_metadata_path = INTERIM_DATA_DIR / "train.csv"
-    val_metadata_path = INTERIM_DATA_DIR / "val.csv"
-
-    model_output_dir = MODELS_DIR / model_name
-    model_output_dir.mkdir(parents=True, exist_ok=True)
-
-    # Get pretrained model name from config
-    pretrained_model_name = MODEL_NAMES[model_name]
-
-    # Load model with memory optimization
-    logger.info(f"Loading pretrained model: {pretrained_model_name}")
-    try:
-
-        # ------------------------------------------------------------------
-        # 🆕 ELASTIC AST BRANCH
-        # ------------------------------------------------------------------
-        if model_name == "elastic_ast":
-            from cmpt491_als.modeling.elastic_ast_wrapper import ElasticASTForAudioClassification
-
-            feature_extractor = ASTFeatureExtractor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
-
-            class_names = ['ALS-1', 'ALS-2', 'ALS-3', 'ALS-4', 'Healthy']
-            num_labels = len(class_names)
-            id2label = {i: name for i, name in enumerate(class_names)}
-            label2id = {name: i for i, name in enumerate(class_names)}
-
-            model = ElasticASTForAudioClassification(num_labels=num_labels).to(device)
-
-            logger.info("ElasticAST loaded successfully with AST feature extractor.")
-
-        # ------------------------------------------------------------------
-        # EXISTING AST (HuggingFace) MODEL BRANCH
-        # ------------------------------------------------------------------
-        else:
-            feature_extractor = ASTFeatureExtractor.from_pretrained(pretrained_model_name)
-            logger.info("Feature extractor loaded successfully")
-
-            # Define proper class names
-            class_names = ['ALS-1', 'ALS-2', 'ALS-3', 'ALS-4', 'Healthy']
-            id2label = {i: name for i, name in enumerate(class_names)}
-            label2id = {name: i for i, name in enumerate(class_names)}
-
-            model = ASTForAudioClassification.from_pretrained(
-                pretrained_model_name,
-                num_labels=5,
-                ignore_mismatched_sizes=True,
-                torch_dtype=torch.float32,  # Explicit dtype for stability
-                id2label=id2label,
-                label2id=label2id
-            )
-            logger.info("Model loaded successfully with proper class names")
-
-            # Memory optimization for M2
-            if platform == "m2" or device == "mps":
-                if hasattr(model.config, 'use_memory_efficient_attention'):
-                    model.config.use_memory_efficient_attention = True
-
-            model = model.to(device)
-            logger.info(f"Model moved to {device}")
-
-    except Exception as e:
-        logger.error(f"Error loading model: {e}")
-        return
-
-    # Create datasets
-    # Create datasets
-    try:
-        train_dataset = SANDDataset(
-            audio_root=audio_root,
-            metadata_csv=train_metadata_path,
-            feature_extractor=feature_extractor
-        )
-
-        val_dataset = SANDDataset(
-            audio_root=audio_root,
-            metadata_csv=val_metadata_path,
-            feature_extractor=feature_extractor
-        )
-
-        logger.info(f"Datasets created: train={len(train_dataset)}, val={len(val_dataset)}")
-
-    except Exception as e:
-        logger.error(f"Error creating datasets: {e}")
-        return
-
-    # Create data loaders with platform-specific settings
-    dataloader_kwargs = {
-        "batch_size": config["batch_size"],
-        "num_workers": config["num_workers"],
-        "pin_memory": (device == "cuda"),
-        "persistent_workers": True if config["num_workers"] > 0 else False
-    }
-
-    # A100 optimizations
-    if platform == "a100":
-        dataloader_kwargs.update({
-            "prefetch_factor": 2,  # Prefetch batches
-            "drop_last": True,     # Consistent batch sizes
-        })
+    logger.info(f"Loaded dataset: {len(train_dataset)} train, {len(val_dataset)} val")
 
     train_loader = DataLoader(
         train_dataset,
+        batch_size=batch_size,
         shuffle=True,
-        **dataloader_kwargs
+        num_workers=num_workers,
+        pin_memory=True,
     )
 
     val_loader = DataLoader(
         val_dataset,
+        batch_size=batch_size,
         shuffle=False,
-        **dataloader_kwargs
+        num_workers=num_workers,
+        pin_memory=True,
     )
 
-    # Setup training with optimizations
-    use_amp = (device == "cuda")  # Use mixed precision on CUDA
-    scaler = GradScaler() if use_amp else None
+    return train_loader, val_loader
 
-    optimizer = optim.AdamW(
-        model.parameters(),
-        lr=config["learning_rate"],
-        weight_decay=0.01,
-        eps=1e-8  # Better numerical stability
+
+@app.command("fit")
+def fit(
+    model_name: str = typer.Option(
+        "elastic-audio/elastic-ast-large",
+        help="HF model: elastic-audio/elastic-ast-large or MIT/ast-finetuned-audioset-10-10-0.4593",
+    ),
+    platform: str = typer.Option(
+        "auto",
+        help="Hardware preset: auto, a100, m2, etc."
+    ),
+):
+    """
+    Train ElasticAST or AST on SAND dataset.
+    """
+
+    logger.info("========== TRAINING START ==========")
+
+    # Device ------------------------------------------------------
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    logger.info(f"Device: {device}")
+
+    # Config -------------------------------------------------------
+    cfg = get_training_config(platform)
+    num_epochs = cfg["num_epochs"]
+    batch_size = cfg["batch_size"]
+    lr = cfg["learning_rate"]
+    num_workers = cfg["num_workers"]
+
+    logger.info(f"Training config: {cfg}")
+
+    # Feature extractor -------------------------------------------
+    feature_extractor = load_feature_extractor(model_name)
+
+    # Model --------------------------------------------------------
+    model = load_model(model_name, num_labels=5).to(device)
+
+    # Dataloaders --------------------------------------------------
+    train_loader, val_loader = create_dataloaders(
+        feature_extractor=feature_extractor,
+        batch_size=batch_size,
+        num_workers=num_workers,
     )
 
-    # Learning rate scheduler for A100
-    if platform == "a100":
-        scheduler = optim.lr_scheduler.CosineAnnealingLR(
-            optimizer, T_max=config["num_epochs"], eta_min=1e-7
-        )
-    else:
-        scheduler = None
+    # Optimizer + scheduler ---------------------------------------
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr)
+    scaler = torch.cuda.amp.GradScaler() if device.type == "cuda" else None
 
-    # Compile model for A100 (PyTorch 2.0+)
-    if platform == "a100" and hasattr(torch, 'compile'):
-        try:
-            model = torch.compile(model)
-            logger.info("Model compiled for better performance")
-        except Exception as e:
-            logger.warning(f"Model compilation failed: {e}")
+    # Output dir ---------------------------------------------------
+    model_dir = MODELS_DIR / model_name.replace("/", "_")
+    model_dir.mkdir(parents=True, exist_ok=True)
 
-    # Training loop
-    best_val_f1 = 0
-    logger.info(f"Starting training: {config['num_epochs']} epochs, batch_size={config['batch_size']}")
-    logger.info(f"Mixed precision: {use_amp}, Gradient accumulation: {config['gradient_accumulation_steps']}")
-    logger.info("Using F1-score for model selection (competition metric)")
+    # Training loop -----------------------------------------------
+    best_val_loss = float("inf")
 
-    try:
-        for epoch in range(config["num_epochs"]):
-            logger.info(f"\nEpoch {epoch + 1}/{config['num_epochs']}")
+    for epoch in range(1, num_epochs + 1):
+        logger.info(f"----- EPOCH {epoch}/{num_epochs} -----")
 
-            # Train with optimizations
-            train_loss, train_acc = train_epoch(
-                model, train_loader, optimizer, device,
-                scaler, config["gradient_accumulation_steps"]
-            )
+        model.train()
+        total_train_loss = 0
 
-            # Validate (now returns F1-score too)
-            val_loss, val_acc, val_f1 = validate_epoch(model, val_loader, device)
+        for batch in train_loader:
+            optimizer.zero_grad()
 
-            # Learning rate scheduling
-            if scheduler is not None:
-                scheduler.step()
-                current_lr = scheduler.get_last_lr()[0]
-                logger.info(f"Learning rate: {current_lr:.2e}")
+            x = batch["input_values"].to(device)
+            y = batch["labels"].to(device)
 
-            logger.info(f"Train Loss: {train_loss:.4f}, Train Acc: {train_acc:.4f}")
-            logger.info(f"Val Loss: {val_loss:.4f}, Val Acc: {val_acc:.4f}, Val F1: {val_f1:.4f}")
+            with torch.cuda.amp.autocast(enabled=(scaler is not None)):
+                outputs = model(x, labels=y)
+                loss = outputs.loss
 
-            # Save best model based on F1-score (competition metric)
-            if val_f1 > best_val_f1:
-                best_val_f1 = val_f1
-                model_path = model_output_dir / "best_model"
+            if scaler:
+                scaler.scale(loss).backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+                optimizer.step()
 
-                # Save the original model (unwrap if compiled)
-                model_to_save = model._orig_mod if hasattr(model, '_orig_mod') else model
-                model_to_save.save_pretrained(model_path)
-                feature_extractor.save_pretrained(model_path)
-                logger.info(f"New best F1-score: {best_val_f1:.4f}")
+            total_train_loss += loss.item()
 
-            # Memory cleanup
-            if device == "cuda":
-                torch.cuda.empty_cache()
-            elif device == "mps":
-                torch.mps.empty_cache()
+        avg_train_loss = total_train_loss / len(train_loader)
+        logger.info(f"[Train] Loss: {avg_train_loss:.4f}")
 
-        logger.success(f"Training complete! Best F1-score: {best_val_f1:.4f}")
+        # Validation ----------------------------------------------
+        model.eval()
+        total_val_loss = 0
 
-    except Exception as e:
-        logger.error(f"Training error: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
+        with torch.no_grad():
+            for batch in val_loader:
+                x = batch["input_values"].to(device)
+                y = batch["labels"].to(device)
 
+                outputs = model(x, labels=y)
+                loss = outputs.loss
+                total_val_loss += loss.item()
 
-if __name__ == "__main__":
-    app() # train.py
+        avg_val_loss = total_val_loss / len(val_loader)
+        logger.info(f"[Val] Loss: {avg_val_loss:.4f}")
+
+        # Save best model -----------------------------------------
+        if avg_val_loss < best_val_loss:
+            best_val_loss = avg_val_loss
+            save_path = model_dir / "best_model.pt"
+            torch.save(model.state_dict(), save_path)
+            logger.info(f"Saved best model → {save_path}")
+
+    logger.info("========== TRAINING COMPLETE ==========")
