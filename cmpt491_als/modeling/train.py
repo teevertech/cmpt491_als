@@ -207,24 +207,14 @@ def fit(
 
             optimizer.zero_grad()
 
-            if scaler:
-                with autocast():
-                    outputs = model(x)
-                    logits = outputs.logits
-                
-                loss = loss_fn(logits.float(), y)
+            # ----- PURE FP32 TRAINING -----
+            outputs = model(x)
+            logits = outputs.logits      # float32
+            loss = loss_fn(logits, y)    # weights also float32
 
-                scaler.scale(loss).backward()
-                scaler.step(optimizer)
-                scaler.update()
-            else:
-                outputs = model(x)
-                logits = outputs.logits.float()
-                loss = loss_fn(logits, y)
-                loss.backward()
-                optimizer.step()
-
-            scheduler.step()  # per-batch LR update
+            loss.backward()
+            optimizer.step()
+            scheduler.step()
 
             train_losses.append(loss.item())
 
@@ -239,10 +229,11 @@ def fit(
         val_preds = []
         val_targets = []
 
+        model.eval()
         with torch.no_grad():
             for batch in val_loader:
                 x = batch["input_values"].to(device)
-                y = batch["labels"].to(device)
+                y = batch["labels"].to(device).long()
 
                 outputs = model(x)
                 logits = outputs.logits
