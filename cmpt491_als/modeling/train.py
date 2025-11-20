@@ -139,19 +139,29 @@ def fit(
     scaler = GradScaler(enabled=(device.type == "cuda"))
 
     # Scheduler (warmup + cosine)
-    total_steps = len(train_loader) * num_epochs
-    warmup_steps = int(total_steps * warmup_ratio)
+    total_steps = num_epochs * len(train_loader)
+    warmup_steps = int(cfg["warmup_ratio"] * total_steps)
 
+    # Warmup: very tiny start factor to avoid illegal 0.0
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer,
-        start_factor=0.0,
+        start_factor=1e-6,   # can't be zero!
         end_factor=1.0,
-        total_iters=warmup_steps,
+        total_iters=warmup_steps
     )
 
+    # Main cosine schedule
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        T_max=total_steps - warmup_steps,
+        T_max=(total_steps - warmup_steps),
+        eta_min=1e-6,
+    )
+
+    # Combine schedulers
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer,
+        schedulers=[warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_steps]
     )
 
     model_dir = MODELS_DIR / "elasticast_sand"
@@ -203,6 +213,7 @@ def fit(
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
+                scheduler.step()
 
             train_losses.append(loss.item())
 
