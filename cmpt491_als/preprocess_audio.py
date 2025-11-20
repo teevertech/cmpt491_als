@@ -3,7 +3,7 @@ import torch
 from pathlib import Path
 import pandas as pd
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = Path(__file__).resolve().parent
 
 RAW_AUDIO_DIR = DATA_DIR / "raw"
 INTERIM_CSV = DATA_DIR / "interim" / "sand_dataset.csv"

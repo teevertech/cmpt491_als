@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
-DATA_DIR = Path(__file__).resolve().parent / "data"
+DATA_DIR = Path(__file__).resolve().parent
 RAW_CSV = DATA_DIR / "raw" / "sand_dataset.csv"
 INTERIM_DIR = DATA_DIR / "interim"
 INTERIM_DIR.mkdir(parents=True, exist_ok=True)
