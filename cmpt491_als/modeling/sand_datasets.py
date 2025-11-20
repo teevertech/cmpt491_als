@@ -42,34 +42,30 @@ class SANDDataset(Dataset):
             logger.info(f"Class distribution: {self._get_class_distribution()}")
 
     def _create_samples(self):
-        """Create list of samples for training/inference"""
         for _, row in self.metadata.iterrows():
-            # Handle both string ("ID000") and integer (4) formats
-            if isinstance(row['ID'], str) and row['ID'].startswith('ID'):
-                subject_id = row['ID']  # Already in ID000 format
-            else:
-                subject_id = f"ID{row['ID']:03d}"  # Format integer as ID004, ID011, etc.
+            tensor_rel_path = row['filepath']
+            label = row['label']
 
-            label = row['Class'] - 1 if pd.notna(row['Class']) else -1  # Handle NaN for test data
-            subject_dir = self.data_dir / subject_id
+            tensor_file = self.data_dir / tensor_rel_path
 
-            if not subject_dir.exists():
-                logger.warning(f"Subject directory not found: {subject_dir}")
+            if not tensor_file.exists():
+                logger.warning(f"Tensor file missing: {tensor_file}")
                 continue
 
-            for task in self.audio_tasks:
-                tensor_file = subject_dir / f"{subject_id}_{task}.pt"
-                if tensor_file.exists():
-                    self.samples.append({
-                        'subject_id': subject_id,
-                        'tensor_file': tensor_file,
-                        'audio_task': task,
-                        'label': label,
-                        'age': row['Age'],
-                        'sex': row['Sex']
-                    })
-                else:
-                    logger.warning(f"Preprocessed tensor not found: {tensor_file}")
+            # Extract subject_id from filename: e.g. "ID000_phonationA.pt"
+            fname = Path(tensor_rel_path).name
+            subject_id = fname.split("_")[0]  # "ID000"
+
+            audio_task = fname.split("_")[1].replace(".pt", "")  # phonationA
+
+            self.samples.append({
+                'subject_id': subject_id,
+                'tensor_file': tensor_file,
+                'audio_task': audio_task,
+                'label': label,
+                'age': None,
+                'sex': None
+            })
 
     def _get_class_distribution(self):
         """Get distribution of classes in the dataset."""
@@ -107,7 +103,7 @@ class SANDDataset(Dataset):
         # Build the return data structure
         data_sample = {
             'input_values': audio_features,
-            'labels': torch.tensor(sample['label'] if sample['label'] != -1 else 0, dtype=torch.long),  # Use 0 for test data
+            'labels': torch.tensor(sample['label'] if sample['label'] != -1 else 0),
             'subject_id': sample['subject_id'],
             'audio_task': sample['audio_task'],
             'metadata': {
