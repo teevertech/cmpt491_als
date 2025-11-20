@@ -122,8 +122,7 @@ def fit(
     # Class weights ----------------------------------------------
     train_csv = INTERIM_DATA_DIR / "train.csv"
     class_weights = compute_class_weights(train_csv, num_classes=5).to(device)
-    if device.type == "cuda":
-        class_weights = class_weights.half()
+    class_weights = class_weights.float()
     loss_fn = torch.nn.CrossEntropyLoss(weight=class_weights)
 
     # Model -------------------------------------------------------
@@ -220,7 +219,7 @@ def fit(
                 scaler.update()
             else:
                 outputs = model(x)
-                logits = outputs.logits
+                logits = outputs.logits.float()
                 loss = loss_fn(logits, y)
                 loss.backward()
                 optimizer.step()
