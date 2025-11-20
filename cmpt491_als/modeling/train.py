@@ -167,24 +167,18 @@ def train(
         # 🆕 ELASTIC AST BRANCH
         # ------------------------------------------------------------------
         if model_name == "elastic_ast":
-            logger.info("Loading ElasticAST model (local PyTorch module).")
-
-            # 1. Import local wrapper (you will create elastic_ast_wrapper.py)
             from cmpt491_als.modeling.elastic_ast_wrapper import ElasticASTForAudioClassification
 
-            # 2. Define class labels
+            feature_extractor = ASTFeatureExtractor.from_pretrained("MIT/ast-finetuned-audioset-10-10-0.4593")
+
             class_names = ['ALS-1', 'ALS-2', 'ALS-3', 'ALS-4', 'Healthy']
             num_labels = len(class_names)
             id2label = {i: name for i, name in enumerate(class_names)}
             label2id = {name: i for i, name in enumerate(class_names)}
 
-            # 3. Initialize ElasticAST model
             model = ElasticASTForAudioClassification(num_labels=num_labels).to(device)
 
-            # 4. ElasticAST does not use HuggingFace feature extractors
-            feature_extractor = None
-
-            logger.info("ElasticAST loaded successfully.")
+            logger.info("ElasticAST loaded successfully with AST feature extractor.")
 
         # ------------------------------------------------------------------
         # EXISTING AST (HuggingFace) MODEL BRANCH
